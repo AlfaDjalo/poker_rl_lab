@@ -293,14 +293,16 @@ class GameEncoder(nn.Module):
         if not games:
             raise ValueError("games must be non-empty")
 
+        device = self.betting_type_embed.weight.device
+
         betting_type_ids = torch.tensor(
-            [g.betting_type_id for g in games], dtype=torch.long
+            [g.betting_type_id for g in games], dtype=torch.long, device=device
         )
         payout_type_ids = torch.tensor(
-            [g.payout_type_id for g in games], dtype=torch.long
+            [g.payout_type_id for g in games], dtype=torch.long, device=device
         )
         showdown_type_ids = torch.tensor(
-            [g.showdown_type for g in games], dtype=torch.long
+            [g.showdown_type for g in games], dtype=torch.long, device=device
         )
 
         scalars = torch.tensor(
@@ -317,6 +319,7 @@ class GameEncoder(nn.Module):
                 for g in games
             ],
             dtype=torch.float32,
+            device=device,
         )
 
         betting_embed = self.betting_type_embed(betting_type_ids)     # (batch, betting_type_dim)

@@ -187,7 +187,10 @@ class HistoryEncoder(nn.Module):
 
     def _events_to_tokens(self, events: Sequence[HistoryEvent]) -> torch.Tensor:
         """Build the (len(events), token_dim) token tensor for one sequence."""
-        action_ids = torch.tensor([e.action_type for e in events], dtype=torch.long)
+        device = self.action_type_embed.weight.device
+        action_ids = torch.tensor(
+            [e.action_type for e in events], dtype=torch.long, device=device
+        )
         scalars = torch.tensor(
             [
                 [
@@ -200,6 +203,7 @@ class HistoryEncoder(nn.Module):
                 for e in events
             ],
             dtype=torch.float32,
+            device=device,
         )
         action_embed = self.action_type_embed(action_ids)   # (len, action_type_dim)
         scalar_embed = self.scalar_mlp(scalars)              # (len, scalar_hidden_dim)
@@ -275,8 +279,9 @@ class HistoryEncoder(nn.Module):
 
         max_len = max(lengths)
         token_dim = self.action_type_embed.embedding_dim + self.scalar_mlp[0].out_features
+        device = self.action_type_embed.weight.device
 
-        padded = torch.zeros(batch_size, max_len, token_dim)
+        padded = torch.zeros(batch_size, max_len, token_dim, device=device)
         for i, evs in enumerate(batch_events):
             if not evs:
                 continue
@@ -284,11 +289,13 @@ class HistoryEncoder(nn.Module):
 
         output, _ = self.gru(padded)  # (batch, max_len, gru_hidden_dim)
 
-        idx = torch.tensor([max(n - 1, 0) for n in lengths], dtype=torch.long)
-        gathered = output[torch.arange(batch_size), idx]  # (batch, gru_hidden_dim)
+        idx = torch.tensor([max(n - 1, 0) for n in lengths], dtype=torch.long, device=device)
+        gathered = output[torch.arange(batch_size, device=device), idx]  # (batch, gru_hidden_dim)
         projected = self.project(gathered)                  # (batch, output_dim)
 
-        empty_rows = torch.tensor([n == 0 for n in lengths], dtype=torch.bool)
+        empty_rows = torch.tensor(
+            [n == 0 for n in lengths], dtype=torch.bool, device=device
+        )
         if empty_rows.any():
             projected = projected.clone()
             projected[empty_rows] = self.empty_history_embed

@@ -282,6 +282,8 @@ class PositionEncoder(nn.Module):
         if not positions:
             raise ValueError("positions must be non-empty")
 
+        device = next(self.mlp.parameters()).device
+
         scalars = torch.tensor(
             [
                 [
@@ -297,6 +299,7 @@ class PositionEncoder(nn.Module):
                 for p in positions
             ],
             dtype=torch.float32,
+            device=device,
         )
 
         return self.mlp(scalars)

@@ -51,8 +51,41 @@ from experiments.full_holdem_experiment import (
     FullHoldemExperimentConfig,
     save_checkpoint,
 )
+from representation.pretrained_hand_encoder import (
+    HandEncoderArchitectureMismatch,
+    PretrainedHandEncoder,
+)
+from poker_engine.scoring.scoring_engine import CppScoringEngine
 
 _ACTION_ORDER = [a.name for a in ActionType]
+
+
+def _load_hand_encoder(path: str, expected_embedding_dim=None):
+    """
+    Load the real pretrained hand encoder from `path`, or fall back to an
+    untrained copy (with a loud warning) if the file isn't there / fails
+    to load. Identical loader to run_push_fold_demo.py's own.
+    """
+    if not path:
+        print("No --encoder-path given — using an UNTRAINED hand encoder "
+              "(no poker knowledge). Pass --encoder-path to use real weights.")
+        return PretrainedHandEncoder.untrained()
+
+    try:
+        encoder = PretrainedHandEncoder.from_file(
+            path, expected_embedding_dim=expected_embedding_dim
+        )
+        print(f"Loaded pretrained hand encoder from {path} "
+              f"(embedding_dim={encoder.embedding_dim}).")
+        return encoder
+    except FileNotFoundError:
+        print(f"WARNING: encoder file not found at {path!r} — falling back "
+              f"to an UNTRAINED hand encoder (no poker knowledge).")
+        return PretrainedHandEncoder.untrained()
+    except HandEncoderArchitectureMismatch as exc:
+        print(f"WARNING: {path!r} failed architecture validation ({exc}) — "
+              f"falling back to an UNTRAINED hand encoder.")
+        return PretrainedHandEncoder.untrained()
 
 
 def _fmt_action_freqs(freqs: dict) -> str:
@@ -85,6 +118,22 @@ def main():
     parser.add_argument("--checkpoint-out", type=str, default=None)
     parser.add_argument("--log-every", type=int, default=1,
                          help="Print training stats every N iterations.")
+    parser.add_argument(
+        "--encoder-path", type=str, default="encoders/encoder_model.keras",
+        help="Path to the pretrained hand encoder .keras file. Pass an "
+             "empty string ('') to force an untrained encoder.",
+    )
+    parser.add_argument(
+        "--encoder-embedding-dim", type=int, default=32,
+        help="Expected embedding_dim of the loaded encoder; loading fails "
+             "loudly if it doesn't match. Pass 0 to skip this check.",
+    )
+    parser.add_argument(
+        "--use-mock-scoring", action="store_true",
+        help="Use MockScoringEngine (deterministic dummy scores, no real "
+             "poker knowledge) instead of the real poker_eval-backed "
+             "CppScoringEngine. Default is the real scoring engine.",
+    )
     args = parser.parse_args()
 
     cfg = FullHoldemExperimentConfig(
@@ -96,14 +145,18 @@ def main():
         minibatch_size=args.minibatch_size,
         learning_rate=args.learning_rate,
         seed=args.seed,
+        scoring_engine=None if args.use_mock_scoring else CppScoringEngine(),
     )
 
     _print_header("BUILDING EXPERIMENT")
-    print("NOTE: untrained hand encoder + mock poker_eval + mock scoring engine —")
-    print("      this run exercises the full Engine-backed pipeline end-to-end")
-    print("      but carries no real poker skill.")
+    print(f"scoring engine: "
+          f"{'MockScoringEngine (no real poker knowledge)' if args.use_mock_scoring else 'CppScoringEngine (real poker_eval)'}")
+    hand_encoder = _load_hand_encoder(
+        args.encoder_path,
+        expected_embedding_dim=args.encoder_embedding_dim or None,
+    )
     print(f"config: {cfg}")
-    exp = build_full_holdem_experiment(cfg)
+    exp = build_full_holdem_experiment(cfg, hand_encoder=hand_encoder)
     print(f"hero seat is re-derived from scenario.current_player at each reset() "
           f"(UTG for a fresh preflop deal — see full_holdem_generator.py); "
           f"table size = {args.player_count}")

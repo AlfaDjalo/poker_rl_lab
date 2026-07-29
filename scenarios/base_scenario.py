@@ -77,7 +77,19 @@ class BaseScenario:
     street_index : int
         Current street: 0=preflop, 1=flop, 2=turn, 3=river.
     pot : int
-        Chips already in the pot (excluding current_bet of players).
+        Total chips already committed to the middle by ALL players up to
+        this point, INCLUDING each player's current-street current_bet
+        (blinds, antes, and any bets/calls/raises already posted). This
+        matches the real Engine's convention exactly: poker_engine's
+        GameState.pot is incremented the moment a blind/ante/bet/call is
+        applied (see poker_engine/state/game_state.py's apply_action and
+        poker_state.py's _post_blind/_post_antes — both do `g.pot +=
+        amount` in the same step that sets `player.current_bet`). It is
+        NOT "pot so far, current_bet still to be added" — every
+        scenario generator and environment in this package must populate
+        `pot` this way, so `pot` alone always answers "how many chips
+        are in the middle right now" without the caller needing to
+        separately sum every player's current_bet on top of it.
     dealer_position : int
         0-based seat index of the dealer button.
     current_player : int

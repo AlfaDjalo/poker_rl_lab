@@ -1,12 +1,12 @@
 """
 models/actor_critic_factory.py — Builds a fully-wired PokerActorCritic.
 
-representation_model.py's RepresentationModel takes six already-
+representation_model.py's RepresentationModel takes seven already-
 constructed component encoders as constructor arguments (by design —
 see that module's docstring: "Pass already-constructed instances so
 callers control hyperparameters and, critically, so the SAME
 CardEncoder instance can be shared between board_encoder and anywhere
-else per-card embeddings are needed"). Wiring those six encoders plus
+else per-card embeddings are needed"). Wiring those seven encoders plus
 the hand encoder plus PolicyValueNetwork by hand in every training
 script/notebook/test is repetitive and easy to get subtly wrong (e.g.
 forgetting to share the CardEncoder instance, or mismatching latent_dim
@@ -29,10 +29,22 @@ hand_encoder. This keeps this module importable (and cheaply testable
 with a stub BaseHandEncoder) without a hard TensorFlow dependency for
 callers who don't need the real one yet.
 
+Stack/Pot encoder (added)
+--------------------------
+RepresentationModel now takes a seventh component encoder,
+representation.stack_encoder.StackEncoder — see that module's and
+representation_model.py's own docstrings for why (the Representation
+Model previously carried no stack/pot/bet-to-call signal at all,
+starving every downstream policy of stack-depth awareness). Wired here
+identically to every other encoder: sensible config-driven defaults,
+built fresh per build_actor_critic() call, no sharing required (unlike
+CardEncoder, StackEncoder owns no embedding table another encoder needs
+to reuse).
+
 Dependencies
 ------------
-    PyTorch. representation.* (card/board/point/game/position/history
-    encoders, representation_model), models.policy_value_network,
+    PyTorch. representation.* (card/board/point/game/position/history/
+    stack encoders, representation_model), models.policy_value_network,
     actions.abstract_action.NUM_ACTIONS. TensorFlow only if hand_encoder
     is omitted (lazy import — see above).
 """
@@ -51,6 +63,7 @@ from representation.game_encoder import GameEncoder
 from representation.history_encoder import HistoryEncoder
 from representation.point_encoder import PointEncoder
 from representation.position_encoder import PositionEncoder
+from representation.stack_encoder import StackEncoder
 from representation.representation_model import RepresentationModel
 
 
@@ -96,6 +109,10 @@ class ActorCriticConfig:
     history_scalar_hidden_dim: int = 8
     history_gru_hidden_dim: int = 32
     history_output_dim: int = 16
+
+    # StackEncoder
+    stack_hidden_dim: int = 16
+    stack_output_dim: int = 16
 
     # RepresentationModel combination MLP
     representation_hidden_dim: int = 256
@@ -188,6 +205,11 @@ def build_actor_critic(
         output_dim=cfg.history_output_dim,
     )
 
+    stack_encoder = StackEncoder(
+        hidden_dim=cfg.stack_hidden_dim,
+        output_dim=cfg.stack_output_dim,
+    )
+
     representation_model = RepresentationModel(
         hand_encoder=hand_encoder,
         board_encoder=board_encoder,
@@ -195,6 +217,7 @@ def build_actor_critic(
         game_encoder=game_encoder,
         position_encoder=position_encoder,
         history_encoder=history_encoder,
+        stack_encoder=stack_encoder,
         hidden_dim=cfg.representation_hidden_dim,
         output_dim=cfg.representation_output_dim,
         dropout=cfg.representation_dropout,

@@ -56,12 +56,17 @@ from envs.river_env import (
     FoldAnyVillainPolicy,
     RandomVillainPolicy,
 )
+from envs.poker_eval_evaluator import PokerEvalEvaluator
 from evaluation.baseline_policies import always_fold_policy, calling_station_policy
 from evaluation.policy_evaluator import compare_policies, policy_from_actor_critic
 from experiments.river_experiment import (
     build_river_experiment,
     RiverExperimentConfig,
     save_checkpoint,
+)
+from representation.pretrained_hand_encoder import (
+    HandEncoderArchitectureMismatch,
+    PretrainedHandEncoder,
 )
 
 _ACTION_ORDER = [a.name for a in ActionType]
@@ -94,6 +99,35 @@ def _build_villain(name: str, seed: int):
     return cls()
 
 
+def _load_hand_encoder(path: str, expected_embedding_dim=None):
+    """
+    Load the real pretrained hand encoder from `path`, or fall back to an
+    untrained copy (with a loud warning) if the file isn't there / fails
+    to load. Identical loader to run_push_fold_demo.py's own — see that
+    script for the full rationale.
+    """
+    if not path:
+        print("No --encoder-path given — using an UNTRAINED hand encoder "
+              "(no poker knowledge). Pass --encoder-path to use real weights.")
+        return PretrainedHandEncoder.untrained()
+
+    try:
+        encoder = PretrainedHandEncoder.from_file(
+            path, expected_embedding_dim=expected_embedding_dim
+        )
+        print(f"Loaded pretrained hand encoder from {path} "
+              f"(embedding_dim={encoder.embedding_dim}).")
+        return encoder
+    except FileNotFoundError:
+        print(f"WARNING: encoder file not found at {path!r} — falling back "
+              f"to an UNTRAINED hand encoder (no poker knowledge).")
+        return PretrainedHandEncoder.untrained()
+    except HandEncoderArchitectureMismatch as exc:
+        print(f"WARNING: {path!r} failed architecture validation ({exc}) — "
+              f"falling back to an UNTRAINED hand encoder.")
+        return PretrainedHandEncoder.untrained()
+
+
 def main():
     parser = argparse.ArgumentParser(description="Heads-up river PPO training demo.")
     parser.add_argument("--iterations", type=int, default=20)
@@ -111,14 +145,33 @@ def main():
     parser.add_argument("--checkpoint-out", type=str, default=None)
     parser.add_argument("--log-every", type=int, default=1,
                          help="Print training stats every N iterations.")
+    parser.add_argument(
+        "--encoder-path", type=str, default="encoders/encoder_model.keras",
+        help="Path to the pretrained hand encoder .keras file. Pass an "
+             "empty string ('') to force an untrained encoder.",
+    )
+    parser.add_argument(
+        "--encoder-embedding-dim", type=int, default=32,
+        help="Expected embedding_dim of the loaded encoder; loading fails "
+             "loudly if it doesn't match. Pass 0 to skip this check.",
+    )
+    parser.add_argument(
+        "--use-mock-evaluator", action="store_true",
+        help="Use river_env's MockEvaluator (mask-integer comparison, no "
+             "real poker knowledge) instead of the real poker_eval-backed "
+             "PokerEvalEvaluator. Default is the real evaluator.",
+    )
     args = parser.parse_args()
 
     villain_policy = _build_villain(args.villain, args.seed)
+
+    evaluator = None if args.use_mock_evaluator else PokerEvalEvaluator(seed=args.seed)
 
     cfg = RiverExperimentConfig(
         big_blind=args.big_blind,
         max_raises=args.max_raises,
         villain_policy=villain_policy,
+        evaluator=evaluator,
         num_iterations=args.iterations,
         episodes_per_iteration=args.episodes_per_iteration,
         epochs=args.epochs,
@@ -128,12 +181,16 @@ def main():
     )
 
     _print_header("BUILDING EXPERIMENT")
-    print("NOTE: untrained hand encoder + mock poker_eval — this run exercises")
-    print("      the full pipeline end-to-end but carries no real poker skill.")
+    print(f"showdown evaluator: "
+          f"{'MockEvaluator (no real poker knowledge)' if args.use_mock_evaluator else 'PokerEvalEvaluator (real poker_eval)'}")
     print(f"villain policy : {args.villain}  (fixed opponent style for both "
           f"training and evaluation below)")
+    hand_encoder = _load_hand_encoder(
+        args.encoder_path,
+        expected_embedding_dim=args.encoder_embedding_dim or None,
+    )
     print(f"config: {cfg}")
-    exp = build_river_experiment(cfg)
+    exp = build_river_experiment(cfg, hand_encoder=hand_encoder)
 
     # ------------------------------------------------------------------
     # Training loop

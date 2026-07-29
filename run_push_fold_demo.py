@@ -34,8 +34,41 @@ from experiments.push_fold_experiment import (
     PushFoldExperimentConfig,
     save_checkpoint,
 )
+from representation.pretrained_hand_encoder import (
+    HandEncoderArchitectureMismatch,
+    PretrainedHandEncoder,
+)
 
 _ACTION_ORDER = [a.name for a in ActionType]
+
+
+def _load_hand_encoder(path: str, expected_embedding_dim=None):
+    """
+    Load the real pretrained hand encoder from `path`, or fall back to an
+    untrained copy (with a loud warning) if the file isn't there / fails
+    to load. Keeps the demo runnable even before the .keras file has been
+    copied into place.
+    """
+    if not path:
+        print("No --encoder-path given — using an UNTRAINED hand encoder "
+              "(no poker knowledge). Pass --encoder-path to use real weights.")
+        return PretrainedHandEncoder.untrained()
+
+    try:
+        encoder = PretrainedHandEncoder.from_file(
+            path, expected_embedding_dim=expected_embedding_dim
+        )
+        print(f"Loaded pretrained hand encoder from {path} "
+              f"(embedding_dim={encoder.embedding_dim}).")
+        return encoder
+    except FileNotFoundError:
+        print(f"WARNING: encoder file not found at {path!r} — falling back "
+              f"to an UNTRAINED hand encoder (no poker knowledge).")
+        return PretrainedHandEncoder.untrained()
+    except HandEncoderArchitectureMismatch as exc:
+        print(f"WARNING: {path!r} failed architecture validation ({exc}) — "
+              f"falling back to an UNTRAINED hand encoder.")
+        return PretrainedHandEncoder.untrained()
 
 
 def _fmt_action_freqs(freqs: dict) -> str:
@@ -65,6 +98,16 @@ def main():
     parser.add_argument("--checkpoint-out", type=str, default=None)
     parser.add_argument("--log-every", type=int, default=1,
                          help="Print training stats every N iterations.")
+    parser.add_argument(
+        "--encoder-path", type=str, default="encoders/encoder_model.keras",
+        help="Path to the pretrained hand encoder .keras file. Pass an "
+             "empty string ('') to force an untrained encoder.",
+    )
+    parser.add_argument(
+        "--encoder-embedding-dim", type=int, default=32,
+        help="Expected embedding_dim of the loaded encoder; loading fails "
+             "loudly if it doesn't match. Pass 0 to skip this check.",
+    )
     args = parser.parse_args()
 
     cfg = PushFoldExperimentConfig(
@@ -78,10 +121,12 @@ def main():
     )
 
     _print_header("BUILDING EXPERIMENT")
-    print("NOTE: untrained hand encoder + mock poker_eval — this run exercises")
-    print("      the full pipeline end-to-end but carries no real poker skill.")
+    hand_encoder = _load_hand_encoder(
+        args.encoder_path,
+        expected_embedding_dim=args.encoder_embedding_dim or None,
+    )
     print(f"config: {cfg}")
-    exp = build_push_fold_experiment(cfg)
+    exp = build_push_fold_experiment(cfg, hand_encoder=hand_encoder)
 
     # ------------------------------------------------------------------
     # Training loop

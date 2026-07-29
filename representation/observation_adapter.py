@@ -41,6 +41,21 @@ Design notes
   Environment doesn't need just to log an event. Computed here using the
   exact same seat_fraction formula as position_encoder.py, so the two
   encoders never disagree about what "seat_fraction" means.
+- Stack/Pot: StructuredObservation.betting already carries pot and
+  bet_to_call (accurate, per-decision), and obs.players carries every
+  seat's live stack — but neither small_blind nor big_blind is
+  StructuredObservation's to carry (see observations.py's docstring:
+  the Environment stays independent of blind-size bookkeeping beyond
+  what BettingObs already needs). Rather than widen
+  StructuredObservation or push a new parameter onto every call site,
+  stack_features_from_observation() sources small_blind/big_blind from
+  `game_def` — exactly the same pattern game_encoder.py's own
+  game_features_from_definition() already uses for `ante_bb` (ante /
+  game_def.big_blind). This does mean the blinds used for BB-unit
+  normalisation are the variant's YAML-declared blinds, not necessarily
+  whatever non-standard blinds a specific scenario/generator used (see
+  stack_encoder.py's own docstring) — an existing, pre-established
+  limitation shared with ante_bb, not a new one introduced here.
 - Loading (game_def, rules) from a game_name touches the real Engine
   (poker_eval C++ extension, via loader.load_game / rules.game_rules).
   ObservationAdapter caches the lookup per game_name so a training loop
@@ -50,7 +65,8 @@ Dependencies
 ------------
     envs.observations, representation.representation_model,
     representation.point_encoder, representation.game_encoder,
-    representation.position_encoder, representation.history_encoder.
+    representation.position_encoder, representation.history_encoder,
+    representation.stack_encoder.
     loader.load_game is imported lazily (inside ObservationAdapter, not
     at module level) so this file can still be imported in a poker_eval-
     less test environment as long as callers build RepresentationInput
@@ -67,6 +83,7 @@ from representation.point_encoder import PointFeatures, point_features_from_defi
 from representation.game_encoder import GameFeatures, game_features_from_definition
 from representation.position_encoder import PositionFeatures, position_features_from_observation
 from representation.history_encoder import HistoryEvent
+from representation.stack_encoder import StackFeatures, stack_features_from_observation
 
 
 # ---------------------------------------------------------------------------
@@ -197,6 +214,12 @@ def observation_to_representation_input(
 
     position = position_features_from_observation(obs)
 
+    stack = stack_features_from_observation(
+        obs,
+        small_blind=getattr(game_def, "small_blind", 1) or 1,
+        big_blind=getattr(game_def, "big_blind", 2) or 2,
+    )
+
     history = history_from_obs(obs)
 
     return RepresentationInput(
@@ -205,6 +228,7 @@ def observation_to_representation_input(
         points=points,
         game=game,
         position=position,
+        stack=stack,
         history=history,
     )
 

@@ -195,13 +195,16 @@ class PushFoldEnv(BasePokerEnv):
         vill = sc.players[0]
         atype = action.action_type
 
-        pot_before_hero = sc.pot + vill.current_bet  # everything committed so far
+        # sc.pot already includes every player's current_bet (shover's
+        # full push + caller's posted blind) — see base_scenario.py's
+        # pot docstring. Nothing needs to be added back on top of it.
+        pot_before_hero = sc.pot  # everything committed so far
 
         # ── FOLD ──────────────────────────────────────────────────────────
         if atype == ActionType.FOLD:
             reward  = -float(hero.current_bet)   # lose the posted blind
             outcome = "fold"
-            pot     = sc.pot + vill.current_bet  # villain takes uncontested
+            pot     = sc.pot  # villain takes uncontested
             hero_action_amount = 0
 
         # ── CALL ──────────────────────────────────────────────────────────
@@ -219,7 +222,10 @@ class PushFoldEnv(BasePokerEnv):
                 hero.hand_mask, vill.hand_mask, board_mask
             )
 
-            pot = sc.pot + vill.current_bet + hero_total
+            # sc.pot already includes vill.current_bet and hero's posted
+            # blind (hero.current_bet); only the additional chips hero
+            # adds to call (to_call) aren't in it yet.
+            pot = sc.pot + to_call
 
             if result is True:
                 reward  = float(sc.pot + effective)   # net gain

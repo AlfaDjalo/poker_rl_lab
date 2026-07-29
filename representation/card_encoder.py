@@ -136,6 +136,11 @@ class CardEncoder(nn.Module):
     # Convenience helpers
     # ------------------------------------------------------------------
 
+    @property
+    def device(self) -> torch.device:
+        """Device the embedding tables currently live on."""
+        return self.rank_embed.weight.device
+
     def embed_mask(self, hand_mask: int) -> torch.Tensor:
         """
         Embed all cards present in *hand_mask*.
@@ -156,8 +161,8 @@ class CardEncoder(nn.Module):
         """
         card_ids = [i for i in range(52) if (hand_mask >> i) & 1]
         if not card_ids:
-            return torch.zeros(0, self.output_dim)
-        ids = torch.tensor(card_ids, dtype=torch.long)
+            return torch.zeros(0, self.output_dim, device=self.device)
+        ids = torch.tensor(card_ids, dtype=torch.long, device=self.device)
         return self.forward(ids)
 
     def embed_cards(self, card_ids: list[int]) -> torch.Tensor:
@@ -178,8 +183,8 @@ class CardEncoder(nn.Module):
             Shape (len(card_ids), output_dim).
         """
         if not card_ids:
-            return torch.zeros(0, self.output_dim)
-        ids = torch.tensor(card_ids, dtype=torch.long)
+            return torch.zeros(0, self.output_dim, device=self.device)
+        ids = torch.tensor(card_ids, dtype=torch.long, device=self.device)
         return self.forward(ids)
 
     # ------------------------------------------------------------------

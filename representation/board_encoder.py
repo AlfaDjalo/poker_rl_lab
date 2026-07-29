@@ -139,7 +139,8 @@ class BoardEncoder(nn.Module):
         if not card_ids:
             return self.empty_board_embed
 
-        ids = torch.tensor(list(card_ids), dtype=torch.long)
+        device = self.empty_board_embed.device
+        ids = torch.tensor(list(card_ids), dtype=torch.long, device=device)
         card_embeds = self.card_encoder(ids)              # (n_cards, card_dim)
         card_embeds = card_embeds.unsqueeze(0)             # (1, n_cards, card_dim)
         attended = self.attention(card_embeds)              # (1, n_cards, card_dim)
@@ -177,15 +178,16 @@ class BoardEncoder(nn.Module):
 
         max_len = max(len(c) for c in non_empty)
         batch_size = len(batch_card_ids)
+        device = self.empty_board_embed.device
 
-        ids = torch.zeros(batch_size, max_len, dtype=torch.long)
-        pad_mask = torch.ones(batch_size, max_len, dtype=torch.bool)  # True = ignore
+        ids = torch.zeros(batch_size, max_len, dtype=torch.long, device=device)
+        pad_mask = torch.ones(batch_size, max_len, dtype=torch.bool, device=device)  # True = ignore
 
         for i, cards in enumerate(batch_card_ids):
             if not cards:
                 continue
             n = len(cards)
-            ids[i, :n] = torch.tensor(cards, dtype=torch.long)
+            ids[i, :n] = torch.tensor(cards, dtype=torch.long, device=device)
             pad_mask[i, :n] = False
 
         card_embeds = self.card_encoder(ids)  # (batch, max_len, card_dim)
@@ -201,7 +203,7 @@ class BoardEncoder(nn.Module):
 
         # Overwrite rows that were empty boards with the learned placeholder.
         empty_rows = torch.tensor(
-            [not bool(c) for c in batch_card_ids], dtype=torch.bool
+            [not bool(c) for c in batch_card_ids], dtype=torch.bool, device=device
         )
         if empty_rows.any():
             out = out.clone()

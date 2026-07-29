@@ -146,8 +146,13 @@ class PushFoldScenarioGenerator(ScenarioGenerator):
 
         players = tuple([shover, caller] + folded_players)
 
-        # --- pot: SB already posted, BB already posted ---
-        pot = self._small_blind  # only SB counts toward pot; BB is current_bet
+        # --- pot: everything already committed (shover's full push +
+        # caller's posted big blind) — see base_scenario.py's pot
+        # docstring: pot INCLUDES current_bet, matching the real
+        # Engine's convention. The shover's current_bet (shove_amount)
+        # already represents their entire commitment including their
+        # own posted blind, so it is not added again here.
+        pot = shove_amount + caller_bet_posted
         # In push-fold we treat the shove as the bet_to_call
         bet_to_call = shove_amount
 

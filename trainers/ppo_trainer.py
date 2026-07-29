@@ -74,6 +74,7 @@ Dependencies
 from __future__ import annotations
 
 import random
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Protocol
 
@@ -83,6 +84,22 @@ import torch.nn.functional as F
 
 from actions.abstract_action import AbstractAction, ActionType
 from trainers.rollout_buffer import RolloutBuffer
+
+
+def _infer_device(model) -> torch.device:
+    """
+    Best-effort device inference for an ActorCriticLike model.
+
+    Real training code passes a PokerActorCritic (nn.Module) — this
+    returns wherever its parameters actually live (CPU or CUDA). Unit
+    tests may pass a lightweight duck-typed stub without real
+    torch.nn.Parameter state; for those, fall back to CPU rather than
+    raising, since a stub has no "device" to move anything to anyway.
+    """
+    try:
+        return next(model.parameters()).device
+    except (StopIteration, AttributeError, TypeError):
+        return torch.device("cpu")
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +139,10 @@ class IterationStats:
     value_loss: float
     entropy: float
     clip_fraction: float
+    elapsed_seconds: float = 0.0
+    """Wall-clock seconds elapsed since train() started, through the end
+    of this iteration. 0.0 if this IterationStats wasn't produced by
+    train() (e.g. constructed directly in a test)."""
 
 
 # ---------------------------------------------------------------------------
@@ -315,9 +336,19 @@ class PPOTrainer:
         obs: List = batch["obs"]
         legal_masks: List = batch["legal_masks"]
         actions: torch.Tensor = batch["actions"]
-        old_log_probs: torch.Tensor = batch["old_log_probs"]
-        advantages: torch.Tensor = batch["advantages"]
-        returns: torch.Tensor = batch["returns"]
+
+        # RolloutBuffer.get() always builds its tensors on CPU (rollout
+        # collection stores plain python floats — see rollout_buffer.py).
+        # evaluate_actions() below runs on whatever device the model's
+        # own parameters live on, so these must be moved there ONCE,
+        # up front, rather than per-minibatch — otherwise `ratio =
+        # torch.exp(new_log_probs - mb_old_log_probs)` and the value
+        # loss below would raise a device-mismatch error the moment the
+        # model is moved to CUDA.
+        device = _infer_device(self.actor_critic)
+        old_log_probs: torch.Tensor = batch["old_log_probs"].to(device)
+        advantages: torch.Tensor = batch["advantages"].to(device)
+        returns: torch.Tensor = batch["returns"].to(device)
 
         n = len(obs)
         if n == 0:
@@ -397,6 +428,8 @@ class PPOTrainer:
         episodes_per_iteration: int = 32,
         epochs: int = 4,
         minibatch_size: int = 64,
+        log_every: int = 10,
+        verbose: bool = True,
     ) -> List[IterationStats]:
         """
         Run `num_iterations` full collect -> update -> clear cycles.
@@ -413,6 +446,16 @@ class PPOTrainer:
             PPO epochs per iteration. Default 4.
         minibatch_size : int
             Minibatch size per PPO epoch. Default 64.
+        log_every : int
+            Print a one-line progress update every `log_every`
+            iterations (and always on the final iteration), e.g.
+            "[PPOTrainer] 10/50 iterations completed (42.3s elapsed,
+            4.23s/iter)". Pass 0 to disable periodic progress lines
+            (the final training-complete summary still prints unless
+            verbose=False).
+        verbose : bool
+            If False, suppresses all progress/timing output from this
+            method entirely. Default True.
 
         Returns
         -------
@@ -422,16 +465,22 @@ class PPOTrainer:
             deliberately does neither (per the guide's §7 isolation
             requirement: PPO stays isolated from experiment tracking
             just as it does from observations/representations/envs).
+            Each entry's elapsed_seconds gives cumulative wall-clock
+            time through that iteration, for callers that want their
+            own plotting/logging beyond the printed progress lines.
         """
         history: List[IterationStats] = []
+        start_time = time.time()
 
-        for _ in range(num_iterations):
+        for i in range(num_iterations):
             buffer = self.collect_rollouts(env, scenario_gen, episodes_per_iteration)
 
             num_transitions = len(buffer)
             mean_reward = self._iteration_reward(buffer)
 
             update_stats = self.update(buffer, epochs=epochs, minibatch_size=minibatch_size)
+
+            elapsed = time.time() - start_time
 
             history.append(
                 IterationStats(
@@ -442,10 +491,29 @@ class PPOTrainer:
                     value_loss=update_stats["value_loss"],
                     entropy=update_stats["entropy"],
                     clip_fraction=update_stats["clip_fraction"],
+                    elapsed_seconds=elapsed,
                 )
             )
 
             buffer.clear()
+
+            iteration_num = i + 1
+            if verbose and log_every > 0 and (
+                iteration_num % log_every == 0 or iteration_num == num_iterations
+            ):
+                print(
+                    f"[PPOTrainer] {iteration_num}/{num_iterations} iterations "
+                    f"completed ({elapsed:.1f}s elapsed, "
+                    f"{elapsed / iteration_num:.2f}s/iter)"
+                )
+
+        if verbose:
+            total_time = time.time() - start_time
+            avg = total_time / num_iterations if num_iterations else 0.0
+            print(
+                f"[PPOTrainer] Training complete: {num_iterations} iterations "
+                f"in {total_time:.1f}s ({avg:.2f}s/iter avg)"
+            )
 
         return history
 

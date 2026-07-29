@@ -217,8 +217,14 @@ class PointEncoder(nn.Module):
         if not points:
             raise ValueError("points must be non-empty")
 
-        score_type_ids = torch.tensor([p.score_type for p in points], dtype=torch.long)
-        showdown_type_ids = torch.tensor([p.showdown_type for p in points], dtype=torch.long)
+        device = self.score_type_embed.weight.device
+
+        score_type_ids = torch.tensor(
+            [p.score_type for p in points], dtype=torch.long, device=device
+        )
+        showdown_type_ids = torch.tensor(
+            [p.showdown_type for p in points], dtype=torch.long, device=device
+        )
 
         scalars = torch.tensor(
             [
@@ -231,6 +237,7 @@ class PointEncoder(nn.Module):
                 for p in points
             ],
             dtype=torch.float32,
+            device=device,
         )
 
         score_embed = self.score_type_embed(score_type_ids)         # (batch, score_type_dim)
