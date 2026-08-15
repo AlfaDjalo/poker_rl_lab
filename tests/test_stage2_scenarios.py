@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import pytest
 
-from scenarios.base_scenario import BaseScenario, PlayerScenario
-from scenarios.push_fold_generator import PushFoldScenarioGenerator
-from scenarios.river_generator import RiverScenarioGenerator
-from scenarios.double_board_river_generator import (
+from poker_rl_lab.scenarios.base_scenario import BaseScenario, PlayerScenario
+from poker_rl_lab.scenarios.push_fold_generator import PushFoldScenarioGenerator
+from poker_rl_lab.scenarios.river_generator import RiverScenarioGenerator
+from poker_rl_lab.scenarios.double_board_river_generator import (
     DoubleBoardRiverScenarioGenerator,
 )
 

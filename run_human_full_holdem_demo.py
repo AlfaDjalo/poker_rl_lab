@@ -55,19 +55,19 @@ import sys
 try:
     import poker_eval  # noqa: F401
 except ImportError:
-    import mock_poker_eval
+    import poker_rl_lab.mock_poker_eval
     sys.modules.setdefault("poker_eval", mock_poker_eval)
 
 import argparse
 
-from controllers.base_controller import (
+from poker_rl_lab.controllers.base_controller import (
     LegalMaskControllerAdapter,
     RandomController,
     RuleBasedController,
 )
-from controllers.human_controller import HumanController
-from evaluation.baseline_policies import always_fold_policy, calling_station_policy
-from envs.full_holdem_env import FullHoldemEnv
+from poker_rl_lab.controllers.human_controller import HumanController
+from poker_rl_lab.evaluation.baseline_policies import always_fold_policy, calling_station_policy
+from poker_rl_lab.envs.full_holdem_env import FullHoldemEnv
 from full_holdem_generator import FullHoldemScenarioGenerator
 
 _VILLAIN_BUILDERS = {

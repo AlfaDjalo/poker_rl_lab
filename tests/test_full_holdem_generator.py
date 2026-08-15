@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import unittest
 
-from scenarios.full_holdem_generator import FullHoldemScenarioGenerator
+from poker_rl_lab.scenarios.full_holdem_generator import FullHoldemScenarioGenerator
 
 
 class TestFullHoldemScenarioGenerator(unittest.TestCase):

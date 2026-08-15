@@ -11,19 +11,36 @@ from __future__ import annotations
 
 import torch
 
-from actions.abstract_action import NUM_ACTIONS, ActionType
-from models.policy_value_network import (
+from poker_rl_lab.actions.abstract_action import NUM_ACTIONS, ActionType
+from poker_rl_lab.models.policy_value_network import (
     PolicyValueNetwork,
     PokerActorCritic,
     apply_legal_mask,
 )
-from representation.representation_model import RepresentationInput
+from poker_rl_lab.representation.stack_encoder import StackEncoder, StackFeatures
+from poker_rl_lab.representation.representation_model import RepresentationInput
 
 from test_representation_model import (
     build_model as build_representation_model,
     holdem_game_features,
     dummy_position,
 )
+
+
+# ---------------------------------------------------------------------------
+# Builders
+# ---------------------------------------------------------------------------
+
+def dummy_stack() -> StackFeatures:
+    return StackFeatures(
+        stack_bb=100.0,
+        effective_stack_bb=100.0,
+        pot_bb=1.5,
+        bet_to_call_bb=1.0,
+        spr=66.67,
+        pot_odds=0.4,
+        sb_bb=0.5,
+    )
 
 
 def build_actor_critic() -> PokerActorCritic:
@@ -33,7 +50,7 @@ def build_actor_critic() -> PokerActorCritic:
 
 
 def sample_obs() -> RepresentationInput:
-    from representation.point_encoder import PointFeatures
+    from poker_rl_lab.representation.point_encoder import PointFeatures
 
     return RepresentationInput(
         hole_card_ids=[0, 13],
@@ -41,6 +58,7 @@ def sample_obs() -> RepresentationInput:
         points=[PointFeatures(score_type=0, showdown_type=0)],
         game=holdem_game_features(),
         position=dummy_position(),
+        stack=dummy_stack(),
         history=(),
     )
 
@@ -158,7 +176,7 @@ def test_gradients_flow_through_full_stack():
     something to grad-check here, so this test exercises the dealt-board
     path instead to confirm `project` itself is trainable.
     """
-    from representation.point_encoder import PointFeatures
+    from poker_rl_lab.representation.point_encoder import PointFeatures
 
     ac = build_actor_critic()
 
@@ -169,6 +187,7 @@ def test_gradients_flow_through_full_stack():
             points=[PointFeatures(score_type=0, showdown_type=0)],
             game=holdem_game_features(),
             position=dummy_position(),
+            stack=dummy_stack(),
             history=(),
         )
 

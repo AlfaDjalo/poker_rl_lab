@@ -51,7 +51,7 @@ import sys
 try:
     import poker_engine.poker_eval  # noqa: F401  (prefer the real extension if present)
 except ImportError:
-    import mock_poker_eval
+    import poker_rl_lab.mock_poker_eval
 
     sys.modules.setdefault("poker_eval", mock_poker_eval)
 
@@ -61,14 +61,14 @@ from typing import Dict, List, Optional, Union
 
 import torch
 
-from envs.full_holdem_env import FullHoldemEnv, VillainPolicyLike
-from envs.river_env import CheckFoldVillainPolicy
-from models.actor_critic_factory import ActorCriticConfig, build_actor_critic
-from models.policy_value_network import PokerActorCritic
-from representation.base_hand_encoder import BaseHandEncoder
-from representation.observation_adapter import ObservationAdapter
-from scenarios.full_holdem_generator import FullHoldemScenarioGenerator
-from trainers.ppo_trainer import IterationStats, PPOTrainer
+from poker_rl_lab.envs.full_holdem_env import FullHoldemEnv, VillainPolicyLike
+from poker_rl_lab.envs.river_env import CheckFoldVillainPolicy
+from poker_rl_lab.models.actor_critic_factory import ActorCriticConfig, build_actor_critic
+from poker_rl_lab.models.policy_value_network import PokerActorCritic
+from poker_rl_lab.representation.base_hand_encoder import BaseHandEncoder
+from poker_rl_lab.representation.observation_adapter import ObservationAdapter
+from poker_rl_lab.scenarios.full_holdem_generator import FullHoldemScenarioGenerator
+from poker_rl_lab.trainers.ppo_trainer import IterationStats, PPOTrainer
 
 
 # ---------------------------------------------------------------------------

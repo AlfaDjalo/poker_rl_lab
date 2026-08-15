@@ -7,8 +7,8 @@ from __future__ import annotations
 import pytest
 import torch
 
-from actions.abstract_action import ActionType, NUM_ACTIONS
-from representation.history_encoder import HistoryEncoder, HistoryEvent
+from poker_rl_lab.actions.abstract_action import ActionType, NUM_ACTIONS
+from poker_rl_lab.representation.history_encoder import HistoryEncoder, HistoryEvent
 
 
 def ev(action_type=ActionType.CHECK, street=0, seat_fraction=0.0,

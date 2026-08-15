@@ -17,14 +17,30 @@ import numpy as np
 import pytest
 import torch
 
-from actions.abstract_action import ActionType, NUM_ACTIONS
-from models.actor_critic_factory import ActorCriticConfig, build_actor_critic
-from representation.base_hand_encoder import BaseHandEncoder
-from representation.game_encoder import GameFeatures
-from representation.point_encoder import PointFeatures
-from representation.position_encoder import PositionFeatures
-from representation.representation_model import RepresentationInput
+from poker_rl_lab.actions.abstract_action import ActionType, NUM_ACTIONS
+from poker_rl_lab.models.actor_critic_factory import ActorCriticConfig, build_actor_critic
+from poker_rl_lab.representation.base_hand_encoder import BaseHandEncoder
+from poker_rl_lab.representation.game_encoder import GameFeatures
+from poker_rl_lab.representation.point_encoder import PointFeatures
+from poker_rl_lab.representation.position_encoder import PositionFeatures
+from poker_rl_lab.representation.stack_encoder import StackEncoder, StackFeatures
+from poker_rl_lab.representation.representation_model import RepresentationInput
 
+
+# ---------------------------------------------------------------------------
+# Builders
+# ---------------------------------------------------------------------------
+
+def dummy_stack() -> StackFeatures:
+    return StackFeatures(
+        stack_bb=100.0,
+        effective_stack_bb=100.0,
+        pot_bb=1.5,
+        bet_to_call_bb=1.0,
+        spr=66.67,
+        pot_odds=0.4,
+        sb_bb=0.5,
+    )
 
 # ---------------------------------------------------------------------------
 # Stub hand encoder (no TensorFlow)
@@ -90,6 +106,7 @@ def _make_rep_input() -> RepresentationInput:
             active_fraction=1.0,
             to_act_after_fraction=0.5,
         ),
+        stack=dummy_stack(),
         history=[],
     )
 
@@ -109,7 +126,7 @@ def test_build_actor_critic_with_stub_hand_encoder_returns_correct_types():
     actor_critic = build_actor_critic(
         hand_encoder=_StubHandEncoder(embedding_dim=8), config=_small_config()
     )
-    from models.policy_value_network import PokerActorCritic
+    from poker_rl_lab.models.policy_value_network import PokerActorCritic
 
     assert isinstance(actor_critic, PokerActorCritic)
 

@@ -30,8 +30,8 @@ import sys
 
 import numpy as np
 
-from representation.card_utils import card_id_to_str, str_to_card_id
-from representation.pretrained_hand_encoder import (
+from poker_rl_lab.representation.card_utils import card_id_to_str, str_to_card_id
+from poker_rl_lab.representation.pretrained_hand_encoder import (
     HandEncoderArchitectureMismatch,
     PretrainedHandEncoder,
 )

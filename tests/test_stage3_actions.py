@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from actions.abstract_action import (
+from poker_rl_lab.actions.abstract_action import (
     ActionType,
     AbstractAction,
     NUM_ACTIONS,

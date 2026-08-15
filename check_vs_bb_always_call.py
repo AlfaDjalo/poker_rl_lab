@@ -1,5 +1,5 @@
-from experiments.push_fold_duo_experiment import build_push_fold_duo_experiment, load_checkpoint, PushFoldDuoExperimentConfig
-from evaluation.push_fold_duo_baselines import (
+from poker_rl_lab.experiments.push_fold_duo_experiment import build_push_fold_duo_experiment, load_checkpoint, PushFoldDuoExperimentConfig
+from poker_rl_lab.evaluation.push_fold_duo_baselines import (
     evaluate_duo_matchup, duo_seat_policy_from_actor_critic,
     bb_always_call, bb_always_fold, sb_always_push,
 )

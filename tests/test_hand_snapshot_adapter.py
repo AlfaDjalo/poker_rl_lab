@@ -16,13 +16,13 @@ from __future__ import annotations
 
 import unittest
 
-from scenarios.base_scenario import BaseScenario, PlayerScenario
-from scenarios.hand_snapshot_adapter import (
+from poker_rl_lab.scenarios.base_scenario import BaseScenario, PlayerScenario
+from poker_rl_lab.scenarios.hand_snapshot_adapter import (
     scenario_to_snapshot,
     snapshot_to_scenario,
 )
-from scenarios.push_fold_generator import PushFoldScenarioGenerator
-from scenarios.river_generator import RiverScenarioGenerator
+from poker_rl_lab.scenarios.push_fold_generator import PushFoldScenarioGenerator
+from poker_rl_lab.scenarios.river_generator import RiverScenarioGenerator
 
 
 class TestScenarioToSnapshot(unittest.TestCase):

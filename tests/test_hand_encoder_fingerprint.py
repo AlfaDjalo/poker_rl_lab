@@ -20,12 +20,12 @@ import numpy as np
 import pytest
 import tensorflow as tf
 
-from representation.encoders import CardStateEncoder
-from representation.pretrained_hand_encoder import (
+from poker_rl_lab.representation.encoders import CardStateEncoder
+from poker_rl_lab.representation.pretrained_hand_encoder import (
     PretrainedHandEncoder,
     HandEncoderArchitectureMismatch,
 )
-from representation.card_utils import GRID_SHAPE
+from poker_rl_lab.representation.card_utils import GRID_SHAPE
 
 EMBED_DIM = 16
 

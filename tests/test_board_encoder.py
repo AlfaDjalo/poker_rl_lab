@@ -13,8 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import torch
 import pytest
 
-from representation.card_encoder import CardEncoder
-from representation.board_encoder import BoardEncoder
+from poker_rl_lab.representation.card_encoder import CardEncoder
+from poker_rl_lab.representation.board_encoder import BoardEncoder
 
 
 CARD_DIM = 24     # 16 rank + 8 suit, must be divisible by num_heads

@@ -19,7 +19,7 @@ import math
 import pytest
 import torch
 
-from representation.game_encoder import (
+from poker_rl_lab.representation.game_encoder import (
     GameEncoder,
     GameFeatures,
     NUM_BETTING_TYPES,

@@ -30,18 +30,18 @@ from pathlib import Path
 try:
     import poker_eval  # noqa: F401
 except ImportError:
-    import mock_poker_eval
+    import poker_rl_lab.mock_poker_eval
     sys.modules.setdefault("poker_eval", mock_poker_eval)
 
-from models.actor_critic_factory import ActorCriticConfig
-from experiments.river_experiment import (
+from poker_rl_lab.models.actor_critic_factory import ActorCriticConfig
+from poker_rl_lab.experiments.river_experiment import (
     RiverExperimentConfig,
     build_river_experiment,
     run_river_experiment,
     save_checkpoint,
     load_checkpoint,
 )
-from envs.river_env import CallAnyVillainPolicy
+from poker_rl_lab.envs.river_env import CallAnyVillainPolicy
 
 
 def _tiny_actor_critic_config() -> ActorCriticConfig:

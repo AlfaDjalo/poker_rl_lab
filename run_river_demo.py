@@ -42,29 +42,29 @@ import sys
 try:
     import poker_eval  # noqa: F401
 except ImportError:
-    import mock_poker_eval
+    import poker_rl_lab.mock_poker_eval
     sys.modules.setdefault("poker_eval", mock_poker_eval)
 
 import argparse
 import time
 
-from actions.abstract_action import ActionType
-from envs.base_env import RandomHeroPolicy
-from envs.river_env import (
+from poker_rl_lab.actions.abstract_action import ActionType
+from poker_rl_lab.envs.base_env import RandomHeroPolicy
+from poker_rl_lab.envs.river_env import (
     CallAnyVillainPolicy,
     CheckFoldVillainPolicy,
     FoldAnyVillainPolicy,
     RandomVillainPolicy,
 )
-from envs.poker_eval_evaluator import PokerEvalEvaluator
-from evaluation.baseline_policies import always_fold_policy, calling_station_policy
-from evaluation.policy_evaluator import compare_policies, policy_from_actor_critic
-from experiments.river_experiment import (
+from poker_rl_lab.envs.poker_eval_evaluator import PokerEvalEvaluator
+from poker_rl_lab.evaluation.baseline_policies import always_fold_policy, calling_station_policy
+from poker_rl_lab.evaluation.policy_evaluator import compare_policies, policy_from_actor_critic
+from poker_rl_lab.experiments.river_experiment import (
     build_river_experiment,
     RiverExperimentConfig,
     save_checkpoint,
 )
-from representation.pretrained_hand_encoder import (
+from poker_rl_lab.representation.pretrained_hand_encoder import (
     HandEncoderArchitectureMismatch,
     PretrainedHandEncoder,
 )

@@ -18,7 +18,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import numpy as np
-from representation.card_utils import (
+from poker_rl_lab.representation.card_utils import (
     card_id_to_str,
     str_to_card_id,
     card_ids_to_strs,

@@ -29,14 +29,14 @@ Usage
     KMP_DUPLICATE_LIB_OK=TRUE PYTHONPATH=. python3 run_push_fold_duo_demo.py
     KMP_DUPLICATE_LIB_OK=TRUE PYTHONPATH=. python3 run_push_fold_duo_demo.py \
         --variant shared_single_head --mode alternating --iterations 50 \
-        --checkpoint-out ckpt_duo.pt
+        --checkpoint-out ckpt_duo.pt --device cuda
 """
 import sys
 
 try:
     import poker_engine.poker_eval  # noqa: F401
 except ImportError:
-    import mock_poker_eval
+    import poker_rl_lab.mock_poker_eval
     sys.modules.setdefault("poker_eval", mock_poker_eval)
 
 import argparse
@@ -45,20 +45,16 @@ import time
 
 import torch
 
-from actions.abstract_action import ActionType
-from experiments.push_fold_duo_experiment import (
+from poker_rl_lab.actions.abstract_action import ActionType
+from poker_rl_lab.experiments.push_fold_duo_experiment import (
     PolicyVariant,
     PushFoldDuoExperimentConfig,
     build_push_fold_duo_experiment,
     load_checkpoint,
     save_checkpoint,
 )
-from scenarios.push_fold_duo_generator import SB_SEAT, BB_SEAT
-from trainers.duo_training_loop import DuoTrainingMode, collect_duo_rollouts
-from representation.pretrained_hand_encoder import (
-    HandEncoderArchitectureMismatch,
-    PretrainedHandEncoder,
-)
+from poker_rl_lab.scenarios.push_fold_duo_generator import SB_SEAT, BB_SEAT
+from poker_rl_lab.trainers.duo_training_loop import DuoTrainingMode, collect_duo_rollouts
 
 _ACTION_ORDER = [a.name for a in ActionType]
 
@@ -76,38 +72,6 @@ def _fmt_loss_dict(d: dict) -> str:
 
 def _bb_per_100(mean_reward: float, big_blind: int) -> float:
     return mean_reward / big_blind * 100.0
-
-
-def _load_hand_encoder(path: str, expected_embedding_dim=None):
-    """
-    Load the real pretrained hand encoder from `path`, or fall back to an
-    untrained copy (with a loud warning) if the file isn't there / fails
-    to load. Identical loader to run_push_fold_demo.py's own — CLI-only
-    convenience, distinct from
-    experiments.push_fold_duo_experiment._default_hand_encoder(), which
-    is hardcoded to that module's own default path for non-CLI callers
-    of build_push_fold_duo_experiment().
-    """
-    if not path:
-        print("No --encoder-path given — using an UNTRAINED hand encoder "
-              "(no poker knowledge). Pass --encoder-path to use real weights.")
-        return PretrainedHandEncoder.untrained()
-
-    try:
-        encoder = PretrainedHandEncoder.from_file(
-            path, expected_embedding_dim=expected_embedding_dim
-        )
-        print(f"Loaded pretrained hand encoder from {path} "
-              f"(embedding_dim={encoder.embedding_dim}).")
-        return encoder
-    except FileNotFoundError:
-        print(f"WARNING: encoder file not found at {path!r} — falling back "
-              f"to an UNTRAINED hand encoder (no poker knowledge).")
-        return PretrainedHandEncoder.untrained()
-    except HandEncoderArchitectureMismatch as exc:
-        print(f"WARNING: {path!r} failed architecture validation ({exc}) — "
-              f"falling back to an UNTRAINED hand encoder.")
-        return PretrainedHandEncoder.untrained()
 
 
 def _evaluate_self_play(exp, num_episodes: int, seed: int):
@@ -133,7 +97,7 @@ def _evaluate_self_play(exp, num_episodes: int, seed: int):
             result_sb = exp.actor_critic.act(
                 SB_SEAT, rep_sb, obs_sb.legal_mask, deterministic=True
             )
-        from actions.abstract_action import AbstractAction
+        from poker_rl_lab.actions.abstract_action import AbstractAction
         action_sb = AbstractAction(ActionType(result_sb.action_type))
         step1 = exp.env.step(action_sb)
 
@@ -190,14 +154,8 @@ def main():
                          help="Resume training / evaluate from an existing checkpoint.")
     parser.add_argument("--log-every", type=int, default=1)
     parser.add_argument(
-        "--encoder-path", type=str, default="encoders/encoder_model.keras",
-        help="Path to the pretrained hand encoder .keras file. Pass an "
-             "empty string ('') to force an untrained encoder.",
-    )
-    parser.add_argument(
-        "--encoder-embedding-dim", type=int, default=32,
-        help="Expected embedding_dim of the loaded encoder; loading fails "
-             "loudly if it doesn't match. Pass 0 to skip this check.",
+        "--device", type=str, default="cpu",
+        help="PyTorch device for the actor_critic, e.g. 'cpu', 'cuda', 'cuda:0'.",
     )
     args = parser.parse_args()
 
@@ -213,16 +171,13 @@ def main():
         episodes_per_iteration=args.episodes_per_iteration,
         epochs=args.epochs,
         minibatch_size=args.minibatch_size,
+        device=args.device,
     )
 
     _print_header("BUILDING EXPERIMENT")
-    print(f"variant: {args.variant}   mode: {args.mode}")
-    hand_encoder = _load_hand_encoder(
-        args.encoder_path,
-        expected_embedding_dim=args.encoder_embedding_dim or None,
-    )
+    print(f"variant: {args.variant}   mode: {args.mode}   device: {args.device}")
     print(f"config: {cfg}")
-    exp = build_push_fold_duo_experiment(cfg, hand_encoder=hand_encoder)
+    exp = build_push_fold_duo_experiment(cfg)
 
     if args.checkpoint_in:
         load_checkpoint(exp, args.checkpoint_in)

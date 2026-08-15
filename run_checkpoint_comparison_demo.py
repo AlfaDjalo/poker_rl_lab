@@ -51,17 +51,17 @@ import sys
 try:
     import poker_eval  # noqa: F401
 except ImportError:
-    import mock_poker_eval
+    import poker_rl_lab.mock_poker_eval
     sys.modules.setdefault("poker_eval", mock_poker_eval)
 
 import argparse
 
 import torch
 
-from actions.abstract_action import ActionType
-from envs.base_env import RandomHeroPolicy
-from evaluation.baseline_policies import always_fold_policy, calling_station_policy
-from evaluation.policy_evaluator import compare_policies, policy_from_actor_critic
+from poker_rl_lab.actions.abstract_action import ActionType
+from poker_rl_lab.envs.base_env import RandomHeroPolicy
+from poker_rl_lab.evaluation.baseline_policies import always_fold_policy, calling_station_policy
+from poker_rl_lab.evaluation.policy_evaluator import compare_policies, policy_from_actor_critic
 
 _ACTION_ORDER = [a.name for a in ActionType]
 
@@ -102,21 +102,21 @@ def _build_stage(args):
     is equally valid; see module docstring).
     """
     if args.stage == "push_fold":
-        from experiments.push_fold_experiment import (
+        from poker_rl_lab.experiments.push_fold_experiment import (
             build_push_fold_experiment as build_fn,
             PushFoldExperimentConfig as ConfigCls,
         )
         cfg = ConfigCls(big_blind=args.big_blind, seed=args.seed)
 
     elif args.stage == "river":
-        from experiments.river_experiment import (
+        from poker_rl_lab.experiments.river_experiment import (
             build_river_experiment as build_fn,
             RiverExperimentConfig as ConfigCls,
         )
         cfg = ConfigCls(big_blind=args.big_blind, seed=args.seed)
 
     elif args.stage == "full_holdem":
-        from experiments.full_holdem_experiment import (
+        from poker_rl_lab.experiments.full_holdem_experiment import (
             build_full_holdem_experiment as build_fn,
             FullHoldemExperimentConfig as ConfigCls,
         )

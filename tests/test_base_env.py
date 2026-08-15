@@ -26,14 +26,14 @@ from __future__ import annotations
 import math
 from typing import List, Tuple
 
-from scenarios.push_fold_generator import PushFoldScenarioGenerator
-from scenarios.river_generator      import RiverScenarioGenerator
-from actions.abstract_action import AbstractAction, ActionType, NUM_ACTIONS
-from envs.base_env import BasePokerEnv, RandomHeroPolicy, StepRecord, run_episode
+from poker_rl_lab.scenarios.push_fold_generator import PushFoldScenarioGenerator
+from poker_rl_lab.scenarios.river_generator      import RiverScenarioGenerator
+from poker_rl_lab.actions.abstract_action import AbstractAction, ActionType, NUM_ACTIONS
+from poker_rl_lab.envs.base_env import BasePokerEnv, RandomHeroPolicy, StepRecord, run_episode
 
 # Concrete envs under test
-from envs.push_fold_env import PushFoldEnv
-from envs.river_env     import RiverEnv
+from poker_rl_lab.envs.push_fold_env import PushFoldEnv
+from poker_rl_lab.envs.river_env     import RiverEnv
 
 
 # ── Per-env generator factories ───────────────────────────────────────────────
@@ -76,7 +76,7 @@ def conformance_suite(env: BasePokerEnv, gen, label: str, n: int = 30) -> None:
     print(f"PASS  [{label}]  inherits from BasePokerEnv")
 
     # ── 2. reset() returns StructuredObservation ───────────────────────────
-    from envs.observations import StructuredObservation
+    from poker_rl_lab.envs.observations import StructuredObservation
     sc  = gen.generate()
     obs = env.reset(sc)
     assert isinstance(obs, StructuredObservation), \

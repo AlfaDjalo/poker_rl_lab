@@ -44,9 +44,9 @@ import torch
 import torch.nn as nn
 from torch.distributions import Categorical
 
-from actions.abstract_action import AbstractAction, ActionType, NUM_ACTIONS
-from trainers.ppo_trainer import PPOTrainer
-from trainers.rollout_buffer import RolloutBuffer
+from poker_rl_lab.actions.abstract_action import AbstractAction, ActionType, NUM_ACTIONS
+from poker_rl_lab.trainers.ppo_trainer import PPOTrainer
+from poker_rl_lab.trainers.rollout_buffer import RolloutBuffer
 
 
 # ---------------------------------------------------------------------------

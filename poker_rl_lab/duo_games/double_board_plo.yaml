@@ -1,0 +1,46 @@
+name: double_board_plo
+layout_name: double_board
+payout_type: split_pot
+
+hole_cards: 4
+
+board_layout:
+  nodes: 10
+  streets:
+    0: []                       # pre-flop
+    1: [0, 1, 2, 5, 6, 7]        # flop (both boards)
+    2: [3, 8]                    # turn (both boards)
+    3: [4, 9]                    # river (both boards)
+  street_names:
+    0: "pre-flop"
+    1: "flop"
+    2: "turn"
+    3: "river"
+
+# Two INDEPENDENT points (not one point with two node_sets — see
+# point_definition.py: multiple node_sets under a single point are
+# collapsed to a single best-of score, which is correct for a game like
+# hopscotch_bomb_pot's shared-node alternative boards, but WRONG here —
+# double board pays each board separately, win-independent, half the
+# pot each). payout_type: split_pot splits the pot evenly across the
+# number of POINTS (see showdown_resolver.py's _resolve_split_pot:
+# "num_components = number of points, not point x board pairs"), which
+# is exactly the two-halves-of-the-pot semantics double board needs.
+points:
+  - name: board_1
+    score_type: HIGH
+    node_sets:
+      - [0, 1, 2, 3, 4]
+  - name: board_2
+    score_type: HIGH
+    node_sets:
+      - [5, 6, 7, 8, 9]
+
+betting:
+  type: pot_limit
+  small_blind: 1
+  big_blind: 2
+  ante: 0
+
+showdown:
+  type: OMAHA

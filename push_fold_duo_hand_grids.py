@@ -3,26 +3,36 @@ push_fold_duo_hand_grids.py — SB push-probability and BB call-probability
 hand-range grids for a trained/checkpointed push-fold-duo
 DualSeatActorCritic, per stack depth.
 
-This is the push-fold-duo successor to the old (Keras, single-decision)
-new_policy_hand_grids.py: now that "push" is genuinely a MODELED
-decision (SB chooses FOLD vs ALL_IN; BB chooses FOLD vs CALL — see
-envs/push_fold_duo_env.py), these grids are a real read of what the
-current policy has learned, not a proxy for a call-only agent.
+Generic-tree edition
+---------------------
+This module now targets experiments.generic_tree_experiment /
+scenarios.duo_game_config.DuoGameConfig instead of the retired
+experiments.push_fold_duo_experiment (SB_SEAT/BB_SEAT-hardcoded). Seat
+indices are resolved from the loaded DuoGameConfig via
+game_config.seat_index("sb") / .seat_index("bb") rather than assumed to
+be 0/1 — a config-driven game makes no such guarantee (see
+generic_tree_env.py's own docstring). game_name / small_blind /
+big_blind are likewise read off game_config rather than passed
+separately on the CLI, so the synthesized observations below can never
+drift from what the checkpoint was actually trained against.
 
 Why this builds StructuredObservations directly (no env/generator)
 -----------------------------------------------------------------------
 A hand-range grid needs EVERY starting-hand combo at a FIXED stack
-depth, evaluated at each seat's own decision point. PushFoldDuoEnv's
-reset() only accepts a scenario at SB's decision point (see that
-module's docstring), and there is no seam to jump straight to "BB facing
-a specific push with a specific hand" without first driving SB through
-its own (irrelevant, policy-dependent) decision. So this module builds
-the two decision points' StructuredObservations by hand, mirroring
-PushFoldDuoEnv._build_obs()'s exact field construction for each seat —
-see _build_sb_obs / _build_bb_obs below. This does not duplicate any
-BETTING RULE (there is none to duplicate here — push-fold-duo's legal
-actions are fixed by construction: {FOLD, ALL_IN} for SB, {FOLD, CALL}
-for BB), only the observation-shape bookkeeping the env itself does.
+depth, evaluated at each seat's own decision point. GenericTreeEnv's
+reset() only accepts a scenario at the config's start_node (SB's
+decision point for push_fold_duo), and there is no seam to jump
+straight to "BB facing a specific push with a specific hand" without
+first driving SB through its own (irrelevant, policy-dependent)
+decision. So this module builds the two decision points'
+StructuredObservations by hand, mirroring GenericTreeEnv._build_obs()'s
+field construction for push_fold_duo's specific two-node tree — see
+build_sb_obs / build_bb_obs below. This does not duplicate any BETTING
+RULE (push-fold-duo's legal actions are fixed by construction: {FOLD,
+ALL_IN} for SB, {FOLD, CALL} for BB), only the observation-shape
+bookkeeping the env itself does. This is inherently push_fold_duo-tree-
+shaped (it hardcodes "SB pushes, then BB decides"), not generic across
+arbitrary DuoGameConfig trees.
 
 Reading action probabilities (not sampled/argmax actions)
 --------------------------------------------------------------
@@ -45,7 +55,7 @@ Dependencies
     representation.card_utils, representation.observation_adapter,
     models.dual_seat_policy / shared_single_head_policy /
     shared_trunk_two_heads_policy, models.policy_value_network
-    (apply_legal_mask).
+    (apply_legal_mask), experiments.generic_tree_experiment.
 """
 
 from __future__ import annotations
@@ -53,9 +63,9 @@ from __future__ import annotations
 import sys
 
 try:
-    import poker_engine.poker_eval  # noqa: F401
+    import poker_rl_lab.poker_eval as poker_eval  # noqa: F401
 except ImportError:
-    import mock_poker_eval
+    import poker_rl_lab.mock_poker_eval as mock_poker_eval
 
     sys.modules.setdefault("poker_eval", mock_poker_eval)
 
@@ -66,8 +76,8 @@ from typing import Dict, List, Sequence, Tuple
 import numpy as np
 import torch
 
-from actions.abstract_action import ActionType, NUM_ACTIONS
-from envs.observations import (
+from poker_rl_lab.actions.abstract_action import ActionType, NUM_ACTIONS
+from poker_rl_lab.envs.observations import (
     BettingObs,
     BoardObs,
     HistoryEventObs,
@@ -76,22 +86,20 @@ from envs.observations import (
     PlayerObs,
     StructuredObservation,
 )
-from models.dual_seat_policy import DualSeatActorCritic
-from models.policy_value_network import apply_legal_mask
-from models.shared_single_head_policy import SharedSingleHeadActorCritic
-from models.shared_trunk_two_heads_policy import SharedTrunkTwoHeadsActorCritic
-from representation.card_utils import str_to_card_id
-from representation.observation_adapter import ObservationAdapter
-
-SB_SEAT: int = 0
-BB_SEAT: int = 1
+from poker_rl_lab.models.dual_seat_policy import DualSeatActorCritic
+from poker_rl_lab.models.policy_value_network import apply_legal_mask
+from poker_rl_lab.models.shared_single_head_policy import SharedSingleHeadActorCritic
+from poker_rl_lab.models.shared_trunk_two_heads_policy import SharedTrunkTwoHeadsActorCritic
+from poker_rl_lab.representation.card_utils import str_to_card_id
+from poker_rl_lab.representation.observation_adapter import ObservationAdapter
 
 RANKS: Tuple[str, ...] = ("A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2")
 SUITS: Tuple[str, ...] = ("c", "d", "h", "s")
 
 
 # ---------------------------------------------------------------------------
-# Synthetic observation construction (mirrors PushFoldDuoEnv._build_obs)
+# Synthetic observation construction (mirrors GenericTreeEnv._build_obs
+# for push_fold_duo's specific two-node tree)
 # ---------------------------------------------------------------------------
 
 def _mask_to_cards(mask: int) -> Tuple[int, ...]:
@@ -124,6 +132,8 @@ def build_sb_obs(
     stack_bb: float,
     small_blind: int,
     big_blind: int,
+    sb_seat: int,
+    bb_seat: int,
     game_name: str = "holdem",
 ) -> StructuredObservation:
     """SB's decision-point observation: both blinds posted, no shove yet."""
@@ -133,29 +143,30 @@ def build_sb_obs(
     sb_stack = starting_stack - sb_posted
     bb_stack = starting_stack - bb_posted
 
-    players = (
-        PlayerObs(seat=SB_SEAT, stack=sb_stack, current_bet=sb_posted,
-                   has_folded=False, is_all_in=(sb_stack == 0), is_hero=True),
-        PlayerObs(seat=BB_SEAT, stack=bb_stack, current_bet=bb_posted,
-                   has_folded=False, is_all_in=(bb_stack == 0), is_hero=False),
-    )
+    seat_players = {
+        sb_seat: PlayerObs(seat=sb_seat, stack=sb_stack, current_bet=sb_posted,
+                            has_folded=False, is_all_in=(sb_stack == 0), is_hero=True),
+        bb_seat: PlayerObs(seat=bb_seat, stack=bb_stack, current_bet=bb_posted,
+                            has_folded=False, is_all_in=(bb_stack == 0), is_hero=False),
+    }
+    players = tuple(seat_players[s] for s in sorted(seat_players))
 
     return StructuredObservation(
-        hero_seat=SB_SEAT,
+        hero_seat=sb_seat,
         hole_cards=HoleCardsObs(cards=_mask_to_cards(hero_mask)),
         board=BoardObs(node_cards=tuple()),
         players=players,
         betting=BettingObs(
             # Both blinds are already posted before SB's decision — pot
             # must include them (base_scenario.py's inclusive pot
-            # convention; mirrors PushFoldDuoEnv._build_obs).
+            # convention; mirrors GenericTreeEnv._build_obs).
             pot=sb_posted + bb_posted, bet_to_call=bb_posted - sb_posted,
             min_raise=big_blind, street_index=0, raises_this_street=0,
         ),
         legal_mask=_sb_legal_mask(),
         game_name=game_name,
         history=HistoryObs(events=()),
-        dealer_position=SB_SEAT,
+        dealer_position=sb_seat,
         is_terminal=False,
     )
 
@@ -165,6 +176,8 @@ def build_bb_obs(
     stack_bb: float,
     small_blind: int,
     big_blind: int,
+    sb_seat: int,
+    bb_seat: int,
     game_name: str = "holdem",
 ) -> StructuredObservation:
     """BB's decision-point observation: SB has just shoved all-in."""
@@ -176,22 +189,23 @@ def build_bb_obs(
     sb_amount_added = starting_stack - sb_posted  # SB's push, on top of its blind
     pot_before_push = sb_posted + bb_posted
     push_event = HistoryEventObs(
-        seat=SB_SEAT,
+        seat=sb_seat,
         action_type=int(ActionType.ALL_IN),
         street_index=0,
         pot_fraction=(sb_amount_added / pot_before_push if pot_before_push > 0 else 0.0),
         is_aggressor=True,
     )
 
-    players = (
-        PlayerObs(seat=SB_SEAT, stack=0, current_bet=starting_stack,
-                   has_folded=False, is_all_in=True, is_hero=False),
-        PlayerObs(seat=BB_SEAT, stack=bb_stack, current_bet=bb_posted,
-                   has_folded=False, is_all_in=(bb_stack == 0), is_hero=True),
-    )
+    seat_players = {
+        sb_seat: PlayerObs(seat=sb_seat, stack=0, current_bet=starting_stack,
+                            has_folded=False, is_all_in=True, is_hero=False),
+        bb_seat: PlayerObs(seat=bb_seat, stack=bb_stack, current_bet=bb_posted,
+                            has_folded=False, is_all_in=(bb_stack == 0), is_hero=True),
+    }
+    players = tuple(seat_players[s] for s in sorted(seat_players))
 
     return StructuredObservation(
-        hero_seat=BB_SEAT,
+        hero_seat=bb_seat,
         hole_cards=HoleCardsObs(cards=_mask_to_cards(hero_mask)),
         board=BoardObs(node_cards=tuple()),
         players=players,
@@ -199,14 +213,14 @@ def build_bb_obs(
             # SB's full push AND BB's own already-posted blind are both
             # already committed by the time BB decides — pot must
             # include both (base_scenario.py's inclusive pot convention;
-            # mirrors PushFoldDuoEnv._build_obs).
+            # mirrors GenericTreeEnv._build_obs).
             pot=starting_stack + bb_posted, bet_to_call=starting_stack - bb_posted,
             min_raise=big_blind, street_index=0, raises_this_street=0,
         ),
         legal_mask=_bb_legal_mask(),
         game_name=game_name,
         history=HistoryObs(events=(push_event,)),
-        dealer_position=SB_SEAT,
+        dealer_position=sb_seat,
         is_terminal=False,
     )
 
@@ -215,12 +229,12 @@ def build_bb_obs(
 # Action-probability extraction (duck-types on the concrete variant)
 # ---------------------------------------------------------------------------
 
-def _trunk_and_head(actor_critic: DualSeatActorCritic, seat: int):
+def _trunk_and_head(actor_critic: DualSeatActorCritic, seat: int, sb_seat: int):
     if isinstance(actor_critic, SharedSingleHeadActorCritic):
         pac = actor_critic.actor_critic
         return pac.representation_model, pac.policy_value_network
     if isinstance(actor_critic, SharedTrunkTwoHeadsActorCritic):
-        head = actor_critic.head_sb if seat == SB_SEAT else actor_critic.head_bb
+        head = actor_critic.head_sb if seat == sb_seat else actor_critic.head_bb
         return actor_critic.representation_model, head
     raise TypeError(
         f"Don't know how to extract trunk/head from {type(actor_critic).__name__}; "
@@ -231,6 +245,7 @@ def _trunk_and_head(actor_critic: DualSeatActorCritic, seat: int):
 def action_probs(
     actor_critic: DualSeatActorCritic,
     seat: int,
+    sb_seat: int,
     adapter: ObservationAdapter,
     obs: StructuredObservation,
 ) -> np.ndarray:
@@ -238,7 +253,7 @@ def action_probs(
     Full (masked, softmaxed) action-probability vector for one seat at
     one observation. Shape (NUM_ACTIONS,).
     """
-    trunk, head = _trunk_and_head(actor_critic, seat)
+    trunk, head = _trunk_and_head(actor_critic, seat, sb_seat)
     rep_input = adapter.adapt(obs)
 
     with torch.no_grad():
@@ -282,6 +297,8 @@ def generate_sb_push_grid(
     stack_bb: float,
     small_blind: int,
     big_blind: int,
+    sb_seat: int,
+    bb_seat: int,
     game_name: str = "holdem",
 ) -> np.ndarray:
     """13x13 grid of P(ALL_IN) for SB, at a fixed stack depth."""
@@ -294,8 +311,8 @@ def generate_sb_push_grid(
             probs = []
             for c1, c2 in combos:
                 mask = _cards_to_mask([c1, c2])
-                obs = build_sb_obs(mask, stack_bb, small_blind, big_blind, game_name)
-                p = action_probs(actor_critic, SB_SEAT, adapter, obs)
+                obs = build_sb_obs(mask, stack_bb, small_blind, big_blind, sb_seat, bb_seat, game_name)
+                p = action_probs(actor_critic, sb_seat, sb_seat, adapter, obs)
                 probs.append(p[ActionType.ALL_IN])
             grid[i, j] = float(np.mean(probs))
 
@@ -308,6 +325,8 @@ def generate_bb_call_grid(
     stack_bb: float,
     small_blind: int,
     big_blind: int,
+    sb_seat: int,
+    bb_seat: int,
     game_name: str = "holdem",
 ) -> np.ndarray:
     """13x13 grid of P(CALL) for BB facing an SB shove, at a fixed stack depth."""
@@ -320,8 +339,8 @@ def generate_bb_call_grid(
             probs = []
             for c1, c2 in combos:
                 mask = _cards_to_mask([c1, c2])
-                obs = build_bb_obs(mask, stack_bb, small_blind, big_blind, game_name)
-                p = action_probs(actor_critic, BB_SEAT, adapter, obs)
+                obs = build_bb_obs(mask, stack_bb, small_blind, big_blind, sb_seat, bb_seat, game_name)
+                p = action_probs(actor_critic, bb_seat, sb_seat, adapter, obs)
                 probs.append(p[ActionType.CALL])
             grid[i, j] = float(np.mean(probs))
 
@@ -332,8 +351,10 @@ def generate_all_grids(
     actor_critic: DualSeatActorCritic,
     adapter: ObservationAdapter,
     stack_bb_values: Sequence[float],
-    small_blind: int = 1,
-    big_blind: int = 2,
+    small_blind: int,
+    big_blind: int,
+    sb_seat: int,
+    bb_seat: int,
     game_name: str = "holdem",
 ) -> Dict[float, Dict[str, np.ndarray]]:
     """
@@ -344,10 +365,12 @@ def generate_all_grids(
     for stack_bb in stack_bb_values:
         out[stack_bb] = {
             "sb_push": generate_sb_push_grid(
-                actor_critic, adapter, stack_bb, small_blind, big_blind, game_name
+                actor_critic, adapter, stack_bb, small_blind, big_blind,
+                sb_seat, bb_seat, game_name,
             ),
             "bb_call": generate_bb_call_grid(
-                actor_critic, adapter, stack_bb, small_blind, big_blind, game_name
+                actor_critic, adapter, stack_bb, small_blind, big_blind,
+                sb_seat, bb_seat, game_name,
             ),
         }
     return out
@@ -380,40 +403,54 @@ def plot_heatmap(grid: np.ndarray, title: str, out_path: Path) -> None:
 def _main() -> None:
     import argparse
 
-    from experiments.push_fold_duo_experiment import (
+    from poker_rl_lab.experiments.generic_tree_experiment import (
+        GenericTreeExperimentConfig,
         PolicyVariant,
-        PushFoldDuoExperimentConfig,
-        build_push_fold_duo_experiment,
+        build_generic_tree_experiment,
         load_checkpoint,
     )
 
     parser = argparse.ArgumentParser(
         description="Generate SB push / BB call hand-range heatmaps from a "
-                    "push-fold-duo checkpoint."
+                    "generic-tree push-fold-duo checkpoint."
     )
+    parser.add_argument("--config-name", type=str, default="push_fold_duo",
+                         help="Name of scenarios/duo_games/<config_name>.yaml. "
+                              "Must be a config with a push_fold_duo-shaped tree "
+                              "(seats named 'sb'/'bb', SB pushes then BB calls/folds) — "
+                              "this script's obs-building is specific to that shape.")
     parser.add_argument("--checkpoint-in", type=str, required=True)
     parser.add_argument(
         "--variant", type=str, default="shared_trunk_two_heads",
         choices=[v.value for v in PolicyVariant],
         help="Must match the variant the checkpoint was trained with.",
     )
-    parser.add_argument("--small-blind", type=int, default=1)
-    parser.add_argument("--big-blind", type=int, default=2)
     parser.add_argument(
         "--stack-bb-values", type=str, default="5,10,15,20,25",
         help="Comma-separated stack depths (in big blinds) to grid.",
     )
     parser.add_argument("--output-dir", type=str, default="hand_grids")
+    parser.add_argument(
+        "--device", type=str, default="cpu",
+        help="PyTorch device for the actor_critic, e.g. 'cpu', 'cuda', 'cuda:0'.",
+    )
     args = parser.parse_args()
 
-    cfg = PushFoldDuoExperimentConfig(
-        small_blind=args.small_blind,
-        big_blind=args.big_blind,
+    cfg = GenericTreeExperimentConfig(
+        config_name=args.config_name,
         variant=PolicyVariant(args.variant),
+        device=args.device,
     )
-    exp = build_push_fold_duo_experiment(cfg)
+    exp = build_generic_tree_experiment(cfg)
     load_checkpoint(exp, args.checkpoint_in)
     exp.actor_critic.eval()
+
+    game_config = exp.game_config
+    sb_seat = game_config.seat_index("sb")
+    bb_seat = game_config.seat_index("bb")
+    small_blind = game_config.small_blind
+    big_blind = game_config.big_blind
+    game_name = game_config.game_name
 
     stack_bb_values = [float(s) for s in args.stack_bb_values.split(",") if s.strip()]
 
@@ -422,7 +459,8 @@ def _main() -> None:
 
     all_grids = generate_all_grids(
         exp.actor_critic, exp.adapter, stack_bb_values,
-        small_blind=args.small_blind, big_blind=args.big_blind,
+        small_blind=small_blind, big_blind=big_blind,
+        sb_seat=sb_seat, bb_seat=bb_seat, game_name=game_name,
     )
 
     for stack_bb, grids in all_grids.items():

@@ -28,16 +28,16 @@ import numpy as np
 import pytest
 import torch
 
-from actions.abstract_action import ActionType
-from experiments.push_fold_experiment import (
+from poker_rl_lab.actions.abstract_action import ActionType
+from poker_rl_lab.experiments.push_fold_experiment import (
     PushFoldExperimentConfig,
     build_push_fold_experiment,
     load_checkpoint,
     run_push_fold_experiment,
     save_checkpoint,
 )
-from models.actor_critic_factory import ActorCriticConfig
-from representation.base_hand_encoder import BaseHandEncoder
+from poker_rl_lab.models.actor_critic_factory import ActorCriticConfig
+from poker_rl_lab.representation.base_hand_encoder import BaseHandEncoder
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +139,7 @@ def test_single_episode_runs_through_full_adapter_pipeline():
 
     assert result.action_type in (ActionType.FOLD, ActionType.CALL)
 
-    from actions.abstract_action import AbstractAction
+    from poker_rl_lab.actions.abstract_action import AbstractAction
 
     next_obs, reward, done, info = experiment.env.step(
         AbstractAction(ActionType(result.action_type))

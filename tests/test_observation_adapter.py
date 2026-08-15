@@ -13,28 +13,28 @@ import sys
 import pytest
 
 # --- poker_eval shim, must happen before any rules/* or loader import ---
-import mock_poker_eval
+import poker_rl_lab.mock_poker_eval as mock_poker_eval
 sys.modules.setdefault("poker_eval", mock_poker_eval)
 
 from poker_engine.games import loader
 from poker_engine.games.loader import load_game
 
-from scenarios.push_fold_generator import PushFoldScenarioGenerator
-from scenarios.river_generator import RiverScenarioGenerator
-from envs.push_fold_env import PushFoldEnv
-from envs.river_env import RiverEnv
-from envs.observations import HistoryEventObs
-from actions.abstract_action import ActionType
+from poker_rl_lab.scenarios.push_fold_generator import PushFoldScenarioGenerator
+from poker_rl_lab.scenarios.river_generator import RiverScenarioGenerator
+from poker_rl_lab.envs.push_fold_env import PushFoldEnv
+from poker_rl_lab.envs.river_env import RiverEnv
+from poker_rl_lab.envs.observations import HistoryEventObs
+from poker_rl_lab.actions.abstract_action import ActionType
 
-from representation.observation_adapter import (
+from poker_rl_lab.representation.observation_adapter import (
     ObservationAdapter,
     boards_from_node_cards,
     history_event_from_obs,
     history_from_obs,
     observation_to_representation_input,
 )
-from representation.representation_model import RepresentationInput
-from representation.history_encoder import HistoryEvent
+from poker_rl_lab.representation.representation_model import RepresentationInput
+from poker_rl_lab.representation.history_encoder import HistoryEvent
 
 
 # ---------------------------------------------------------------------------

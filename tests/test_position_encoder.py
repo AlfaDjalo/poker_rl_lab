@@ -16,12 +16,12 @@ import math
 import pytest
 import torch
 
-from scenarios.base_scenario import BaseScenario, PlayerScenario
-from scenarios.push_fold_generator import PushFoldScenarioGenerator
-from scenarios.river_generator import RiverScenarioGenerator
-from envs.push_fold_env import PushFoldEnv
-from envs.river_env import RiverEnv
-from representation.position_encoder import (
+from poker_rl_lab.scenarios.base_scenario import BaseScenario, PlayerScenario
+from poker_rl_lab.scenarios.push_fold_generator import PushFoldScenarioGenerator
+from poker_rl_lab.scenarios.river_generator import RiverScenarioGenerator
+from poker_rl_lab.envs.push_fold_env import PushFoldEnv
+from poker_rl_lab.envs.river_env import RiverEnv
+from poker_rl_lab.representation.position_encoder import (
     PositionFeatures,
     PositionEncoder,
     position_features_from_scenario,

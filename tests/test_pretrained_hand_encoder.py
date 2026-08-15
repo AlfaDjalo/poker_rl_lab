@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import numpy as np
 import pytest
 
-from representation.pretrained_hand_encoder import PretrainedHandEncoder
+from poker_rl_lab.representation.pretrained_hand_encoder import PretrainedHandEncoder
 
 
 EMBED_DIM = 16

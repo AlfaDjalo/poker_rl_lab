@@ -13,19 +13,14 @@ import pytest
 
 
 PACKAGES = [
-    "scenarios",
-    "envs",
-    "observations",
-    "actions",
-    "agents",
-    "models",
-    "trainers",
-    "replay",
-    "evaluation",
-    "experiments",
-    "utils",
-    "configs",
-    "tests",
+    "poker_rl_lab.scenarios",
+    "poker_rl_lab.envs",
+    "poker_rl_lab.actions",
+    "poker_rl_lab.models",
+    "poker_rl_lab.trainers",
+    "poker_rl_lab.evaluation",
+    "poker_rl_lab.experiments",
+    "poker_rl_lab.utils"
 ]
 
 

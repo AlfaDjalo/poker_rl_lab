@@ -53,22 +53,22 @@ import sys
 try:
     import poker_eval  # noqa: F401
 except ImportError:
-    import mock_poker_eval
+    import poker_rl_lab.mock_poker_eval
     sys.modules.setdefault("poker_eval", mock_poker_eval)
 
 import argparse
 
-from actions.abstract_action import ActionType
-from controllers.base_controller import (
+from poker_rl_lab.actions.abstract_action import ActionType
+from poker_rl_lab.controllers.base_controller import (
     LegalMaskControllerAdapter,
     RandomController,
     RuleBasedController,
 )
-from controllers.human_controller import HumanController
-from evaluation.baseline_policies import always_fold_policy, calling_station_policy
-from envs.river_env import RiverEnv, VILLAIN_SEAT
-from representation.card_utils import card_id_to_str
-from scenarios.river_generator import RiverScenarioGenerator
+from poker_rl_lab.controllers.human_controller import HumanController
+from poker_rl_lab.evaluation.baseline_policies import always_fold_policy, calling_station_policy
+from poker_rl_lab.envs.river_env import RiverEnv, VILLAIN_SEAT
+from poker_rl_lab.representation.card_utils import card_id_to_str
+from poker_rl_lab.scenarios.river_generator import RiverScenarioGenerator
 
 _VILLAIN_BUILDERS = {
     "random": lambda seed: RandomController(seed=seed),

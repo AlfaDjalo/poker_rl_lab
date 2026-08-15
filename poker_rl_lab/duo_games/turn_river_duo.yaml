@@ -1,0 +1,106 @@
+name: turn_river_duo
+description: >
+  Heads-up turn-into-river with a single pot-sized bet per street and
+  no re-raises. Flop+turn (4 cards) are revealed by a chance node
+  before OOP's first decision; the river is only revealed by a second
+  chance node if both players check the turn. Demonstrates a
+  config-driven Chance Node with zero bespoke Python.
+
+game_name: holdem
+small_blind: 1
+big_blind: 2
+
+seats:
+  - id: oop
+    acts_first: true
+  - id: ip
+    acts_first: false
+
+dealer_seat: ip
+
+stack:
+  mode: fixed_bb
+  stack_bb: 100.0
+
+pot:
+  mode: randomized_bb
+  min_pot_bb: 2.0
+  max_pot_bb: 20.0
+
+deal:
+  street_index: 2          # turn — see caveat below on per-node street index
+  hole_cards_per_player: 2
+  node_count: 5             # 3 flop + 1 turn + 1 river
+  deal_board: true
+  reveal_at_start: false
+
+start_node: reveal_flop_turn
+
+nodes:
+  reveal_flop_turn:
+    type: deal
+    node_indices: [0, 1, 2, 3]
+    next: turn_start
+
+  turn_start:
+    seat: oop
+    actions:
+      CHECK: turn_checked
+      BET_100: oop_bet_turn
+
+  turn_checked:
+    seat: ip
+    actions:
+      CHECK: reveal_river
+      BET_100: ip_bet_after_check_turn
+
+  reveal_river:
+    type: deal
+    node_indices: [4]
+    next: river_start
+
+  river_start:
+    seat: oop
+    actions:
+      CHECK: oop_checked_river
+      BET_100: oop_bet_river
+
+  oop_checked_river:
+    seat: ip
+    actions:
+      CHECK: terminal_showdown
+      BET_100: ip_bet_after_check_river
+
+  ip_bet_after_check_river:
+    seat: oop
+    actions:
+      CALL: terminal_showdown
+      FOLD: terminal_fold_oop
+
+  oop_bet_river:
+    seat: ip
+    actions:
+      CALL: terminal_showdown
+      FOLD: terminal_fold_ip
+
+  ip_bet_after_check_turn:
+    seat: oop
+    actions:
+      CALL: terminal_showdown
+      FOLD: terminal_fold_oop
+
+  oop_bet_turn:
+    seat: ip
+    actions:
+      CALL: terminal_showdown
+      FOLD: terminal_fold_ip
+
+terminals:
+  terminal_showdown:
+    type: showdown
+  terminal_fold_oop:
+    type: fold
+    folder: oop
+  terminal_fold_ip:
+    type: fold
+    folder: ip

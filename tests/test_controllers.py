@@ -33,8 +33,8 @@ from typing import List, Optional, Sequence, Tuple
 
 import torch
 
-from actions.abstract_action import AbstractAction, ActionType, NUM_ACTIONS
-from envs.observations import (
+from poker_rl_lab.actions.abstract_action import AbstractAction, ActionType, NUM_ACTIONS
+from poker_rl_lab.envs.observations import (
     BettingObs,
     BoardObs,
     HistoryObs,
@@ -42,23 +42,23 @@ from envs.observations import (
     PlayerObs,
     StructuredObservation,
 )
-from evaluation.baseline_policies import (
+from poker_rl_lab.evaluation.baseline_policies import (
     always_fold_policy,
     calling_station_policy,
     preference_policy,
 )
 
-from controllers.base_controller import (
+from poker_rl_lab.controllers.base_controller import (
     Controller,
     RandomController,
     RuleBasedController,
     LegalMaskControllerAdapter,
 )
-from controllers.policy_controller import (
+from poker_rl_lab.controllers.policy_controller import (
     FrozenPolicyController,
     LearningPolicyController,
 )
-from controllers.human_controller import HumanController
+from poker_rl_lab.controllers.human_controller import HumanController
 
 
 # ---------------------------------------------------------------------------

@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import pytest
 
-from actions.abstract_action import AbstractAction, ActionType
-from envs.push_fold_env import PushFoldEnv, HERO_SEAT
-from scenarios.base_scenario import BaseScenario, PlayerScenario
+from poker_rl_lab.actions.abstract_action import AbstractAction, ActionType
+from poker_rl_lab.envs.push_fold_env import PushFoldEnv, HERO_SEAT
+from poker_rl_lab.scenarios.base_scenario import BaseScenario, PlayerScenario
 
 
 def make_scenario(

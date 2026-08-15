@@ -1,0 +1,54 @@
+name: push_fold_duo
+description: >
+  Heads-up preflop push-fold. SB either shoves or folds; if SB shoves,
+  BB either calls (for exactly SB's stack, since both start equal) or
+  folds. No board — resolved as a preflop equity showdown when both
+  seats commit.
+
+game_name: holdem
+small_blind: 1
+big_blind: 2
+
+seats:
+  - id: sb
+    acts_first: true
+  - id: bb
+    acts_first: false
+
+stack:
+  mode: randomized_bb
+  min_stack_bb: 4.0
+  max_stack_bb: 20.0
+
+pot:
+  mode: blinds
+
+deal:
+  street_index: 0
+  hole_cards_per_player: 2
+  node_count: 0
+  deal_board: false
+
+start_node: start
+
+nodes:
+  start:
+    seat: sb
+    actions:
+      FOLD: terminal_fold_sb
+      ALL_IN: sb_pushed
+  sb_pushed:
+    seat: bb
+    actions:
+      FOLD: terminal_fold_bb
+      CALL: terminal_showdown
+
+terminals:
+  terminal_fold_sb:
+    type: fold
+    folder: sb
+  terminal_fold_bb:
+    type: fold
+    folder: bb
+  terminal_showdown:
+    type: showdown

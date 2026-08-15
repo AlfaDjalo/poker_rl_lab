@@ -16,20 +16,20 @@ import sys
 try:
     import poker_eval  # noqa: F401
 except ImportError:
-    import mock_poker_eval
+    import poker_rl_lab.mock_poker_eval as mock_poker_eval
     sys.modules.setdefault("poker_eval", mock_poker_eval)
 
 import pytest
 
-from actions.abstract_action import AbstractAction, ActionType
-from envs.full_holdem_env import FullHoldemEnv
-from envs.river_env import (
+from poker_rl_lab.actions.abstract_action import AbstractAction, ActionType
+from poker_rl_lab.envs.full_holdem_env import FullHoldemEnv
+from poker_rl_lab.envs.river_env import (
     CheckFoldVillainPolicy,
     CallAnyVillainPolicy,
     FoldAnyVillainPolicy,
 )
-from scenarios.base_scenario import BaseScenario, PlayerScenario
-from scenarios.full_holdem_generator import FullHoldemScenarioGenerator
+from poker_rl_lab.scenarios.base_scenario import BaseScenario, PlayerScenario
+from poker_rl_lab.scenarios.full_holdem_generator import FullHoldemScenarioGenerator
 
 
 # ---------------------------------------------------------------------------

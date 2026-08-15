@@ -16,14 +16,15 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from representation.base_hand_encoder import BaseHandEncoder
-from representation.card_encoder import CardEncoder
-from representation.board_encoder import BoardEncoder
-from representation.point_encoder import PointEncoder, PointFeatures
-from representation.game_encoder import GameEncoder, GameFeatures
-from representation.position_encoder import PositionEncoder, PositionFeatures
-from representation.history_encoder import HistoryEncoder, HistoryEvent
-from representation.representation_model import RepresentationModel, RepresentationInput
+from poker_rl_lab.representation.base_hand_encoder import BaseHandEncoder
+from poker_rl_lab.representation.card_encoder import CardEncoder
+from poker_rl_lab.representation.board_encoder import BoardEncoder
+from poker_rl_lab.representation.point_encoder import PointEncoder, PointFeatures
+from poker_rl_lab.representation.game_encoder import GameEncoder, GameFeatures
+from poker_rl_lab.representation.position_encoder import PositionEncoder, PositionFeatures
+from poker_rl_lab.representation.history_encoder import HistoryEncoder, HistoryEvent
+from poker_rl_lab.representation.stack_encoder import StackEncoder, StackFeatures
+from poker_rl_lab.representation.representation_model import RepresentationModel, RepresentationInput
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +72,7 @@ def build_model() -> RepresentationModel:
     game_encoder = GameEncoder(output_dim=16)
     position_encoder = PositionEncoder(output_dim=16)
     history_encoder = HistoryEncoder(output_dim=16)
+    stack_encoder = StackEncoder(output_dim=16)  # <-- Add this line (adjust class name/params as needed)
 
     return RepresentationModel(
         hand_encoder=hand_encoder,
@@ -79,6 +81,7 @@ def build_model() -> RepresentationModel:
         game_encoder=game_encoder,
         position_encoder=position_encoder,
         history_encoder=history_encoder,
+        stack_encoder=stack_encoder,           # <-- Pass it here
         hidden_dim=128,
         output_dim=64,
     )
@@ -128,6 +131,18 @@ def dummy_position() -> PositionFeatures:
     )
 
 
+def dummy_stack() -> StackFeatures:
+    return StackFeatures(
+        stack_bb=100.0,
+        effective_stack_bb=100.0,
+        pot_bb=1.5,
+        bet_to_call_bb=1.0,
+        spr=66.67,
+        pot_odds=0.4,
+        sb_bb=0.5,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -141,6 +156,7 @@ def test_single_board_single_point_no_history():
         points=[PointFeatures(score_type=0, showdown_type=0)],  # HIGH/HOLDEM
         game=holdem_game_features(),
         position=dummy_position(),
+        stack=dummy_stack(),
         history=(),
     )
 
@@ -166,6 +182,7 @@ def test_river_with_full_board_and_history():
         points=[PointFeatures(score_type=0, showdown_type=0)],
         game=holdem_game_features(),
         position=dummy_position(),
+        stack=dummy_stack(),
         history=history,
     )
 
@@ -191,6 +208,7 @@ def test_double_board_multi_point_pooling():
         ],
         game=double_board_game_features(),
         position=dummy_position(),
+        stack=dummy_stack(),
         history=(),
     )
 
@@ -209,6 +227,7 @@ def test_forward_batch():
         points=[PointFeatures(score_type=0, showdown_type=0)],
         game=holdem_game_features(),
         position=dummy_position(),
+        stack=dummy_stack(),
         history=(),
     )
     x2 = RepresentationInput(
@@ -217,6 +236,7 @@ def test_forward_batch():
         points=[PointFeatures(score_type=0, showdown_type=0)],
         game=holdem_game_features(),
         position=dummy_position(),
+        stack=dummy_stack(),
         history=(HistoryEvent(action_type=1, street_index=3, seat_fraction=0.0),),
     )
 
@@ -236,6 +256,7 @@ def test_gradients_flow_to_pytorch_encoders():
         points=[PointFeatures(score_type=0, showdown_type=0)],
         game=holdem_game_features(),
         position=dummy_position(),
+        stack=dummy_stack(),
         history=(HistoryEvent(action_type=3, street_index=1, seat_fraction=0.5, is_aggressor=True),),
     )
 

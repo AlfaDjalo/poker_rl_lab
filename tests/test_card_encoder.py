@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import torch
 import torch.nn as nn
 
-from representation.card_encoder import CardEncoder
+from poker_rl_lab.representation.card_encoder import CardEncoder
 
 
 # ---------------------------------------------------------------------------

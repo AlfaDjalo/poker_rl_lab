@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "poker-rl-lab"
+version = "0.1.0"
+description = "RL Lab for Crazy Asian Poker: environments, representations, models, and training for poker RL agents."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "numpy",
+    "pyyaml",
+    # tensorflow / keras only needed for the pretrained (Keras) hand encoder
+    "tensorflow",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+# --- Package discovery -----------------------------------------------------
+# Flat layout: the installable package root is ./poker_rl_lab
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["poker_rl_lab*"]
+exclude = ["tests*"]
+
+[tool.setuptools.package-data]
+poker_rl_lab = ["**/*.yaml"]

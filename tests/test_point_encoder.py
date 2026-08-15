@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import torch
 import pytest
 
-from representation.point_encoder import (
+from poker_rl_lab.representation.point_encoder import (
     PointEncoder,
     PointFeatures,
     point_features_from_definition,

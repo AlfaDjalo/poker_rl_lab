@@ -15,7 +15,7 @@ import math
 import pytest
 import torch
 
-from trainers.rollout_buffer import RolloutBuffer
+from poker_rl_lab.trainers.rollout_buffer import RolloutBuffer
 
 
 # ---------------------------------------------------------------------------

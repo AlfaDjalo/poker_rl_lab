@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from actions.abstract_action import AbstractAction, ActionType
-from envs.river_env import (
+from poker_rl_lab.actions.abstract_action import AbstractAction, ActionType
+from poker_rl_lab.envs.river_env import (
     RiverEnv,
     HERO_SEAT,
     VILLAIN_SEAT,
@@ -16,7 +16,7 @@ from envs.river_env import (
     CallAnyVillainPolicy,
     FoldAnyVillainPolicy,
 )
-from scenarios.base_scenario import BaseScenario, PlayerScenario
+from poker_rl_lab.scenarios.base_scenario import BaseScenario, PlayerScenario
 
 
 def make_scenario(p0_stack=200, p1_stack=200, pot=20, big_blind=2, small_blind=1):
@@ -177,8 +177,8 @@ class TestRiverHistoryStateIsolation:
 
 class TestRiverHistoryFullPipeline:
     def test_run_episode_conformance_with_history(self):
-        from envs.base_env import run_episode, RandomHeroPolicy
-        from scenarios.river_generator import RiverScenarioGenerator
+        from poker_rl_lab.envs.base_env import run_episode, RandomHeroPolicy
+        from poker_rl_lab.scenarios.river_generator import RiverScenarioGenerator
 
         gen = RiverScenarioGenerator()
         gen.seed(7)
