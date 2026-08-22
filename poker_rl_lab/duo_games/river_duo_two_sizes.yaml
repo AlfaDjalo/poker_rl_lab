@@ -1,0 +1,92 @@
+name: river_duo_two_sizes
+description: >
+  Heads-up river hold'em with TWO available bet sizes (50% pot, 100%
+  pot) and no re-raises — extends river_duo.yaml's single pot-sized-bet
+  tree with an extra size choice at each betting decision. OOP acts
+  first (check, bet half-pot, or bet pot). If OOP checks, IP may bet
+  half-pot, bet pot, or check back. Whoever faces a bet may only call
+  or fold (no re-raise, no resizing) — same "single bet per street"
+  philosophy as river_duo.yaml, just with a real sizing decision on the
+  aggressor's side. Both seats start the street with the same fixed
+  100bb effective stack; the pot itself is randomised so agents see a
+  range of stack-to-pot ratios.
+
+game_name: holdem
+small_blind: 1
+big_blind: 2
+
+seats:
+  - id: oop
+    acts_first: true
+  - id: ip
+    acts_first: false
+
+dealer_seat: ip
+
+stack:
+  mode: fixed_bb
+  stack_bb: 100.0
+
+pot:
+  mode: randomized_bb
+  min_pot_bb: 2.0
+  max_pot_bb: 20.0
+
+deal:
+  street_index: 3
+  hole_cards_per_player: 2
+  node_count: 5
+  deal_board: true
+
+start_node: start
+
+nodes:
+  start:
+    seat: oop
+    actions:
+      CHECK: oop_checked
+      BET_50: oop_bet_50
+      BET_100: oop_bet_100
+
+  oop_checked:
+    seat: ip
+    actions:
+      CHECK: terminal_check_check
+      BET_50: ip_bet_50_after_check
+      BET_100: ip_bet_100_after_check
+
+  ip_bet_50_after_check:
+    seat: oop
+    actions:
+      CALL: terminal_showdown
+      FOLD: terminal_fold_oop
+
+  ip_bet_100_after_check:
+    seat: oop
+    actions:
+      CALL: terminal_showdown
+      FOLD: terminal_fold_oop
+
+  oop_bet_50:
+    seat: ip
+    actions:
+      CALL: terminal_showdown
+      FOLD: terminal_fold_ip
+
+  oop_bet_100:
+    seat: ip
+    actions:
+      CALL: terminal_showdown
+      FOLD: terminal_fold_ip
+
+terminals:
+  terminal_check_check:
+    type: showdown
+  terminal_showdown:
+    type: showdown
+  terminal_fold_oop:
+    type: fold
+    folder: oop
+  terminal_fold_ip:
+    type: fold
+    folder: ip

@@ -206,7 +206,25 @@ def compute_bet_amount(
     effective_pot = pot + to_call
     raw_amount = int(fraction * effective_pot) + to_call
 
-    return max(min_raise, min(raw_amount, max_amount))
+    fraction = action_type.pot_fraction
+    assert fraction is not None
+
+    effective_pot = pot + to_call
+    raw_amount = int(fraction * effective_pot) + to_call
+
+    amount = max(min_raise, min(raw_amount, max_amount))
+    # A bet/raise total can never be less than what this player has
+    # already committed this street (that would mean un-betting chips) —
+    # min_raise alone doesn't guarantee this, since GameState.min_raise
+    # stores the last raise's *increment*, not a total, and can be
+    # smaller than current_bet once a player has already committed
+    # chips this street (e.g. re-raising a small pot). max_amount
+    # already incorporates current_bet as its own floor (current_bet +
+    # stack), so this clamp can never push amount above max_amount.
+    amount = max(amount, current_bet)
+    return amount
+
+    # return max(min_raise, min(raw_amount, max_amount))
 
 
 # ---------------------------------------------------------------------------

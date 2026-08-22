@@ -1,0 +1,76 @@
+name: double_board_high_high_hand_river
+description: >
+  Heads-up river-only double-board High/High/Hand (3 points) with a
+  single pot-sized bet and no re-raises. Action tree identical to
+  double_board_plo_river.yaml — only the underlying game differs: 5
+  hole cards, two independent 5-card boards (dealt up front), 3 scoring
+  points (best high on board 1, best high on board 2, best 5-card hand
+  from hole cards alone), highest point count takes the whole pot. OOP
+  acts first (check or bet pot). If OOP checks, IP may bet pot or check
+  back. Whoever faces a bet may call or fold. Both seats start the
+  street with the same fixed 100bb effective stack; the pot itself is
+  randomised so agents see a range of stack-to-pot ratios.
+
+game_name: double_board_high_high_hand
+small_blind: 1
+big_blind: 2
+
+seats:
+  - id: oop
+    acts_first: true
+  - id: ip
+    acts_first: false
+
+dealer_seat: ip
+
+stack:
+  mode: fixed_bb
+  stack_bb: 100.0
+
+pot:
+  mode: randomized_bb
+  min_pot_bb: 2.0
+  max_pot_bb: 20.0
+
+deal:
+  street_index: 3
+  hole_cards_per_player: 5
+  node_count: 10
+  deal_board: true
+  reveal_at_start: true
+
+start_node: start
+
+nodes:
+  start:
+    seat: oop
+    actions:
+      CHECK: oop_checked
+      BET_100: oop_bet
+  oop_checked:
+    seat: ip
+    actions:
+      CHECK: terminal_check_check
+      BET_100: ip_bet_after_check
+  ip_bet_after_check:
+    seat: oop
+    actions:
+      CALL: terminal_showdown
+      FOLD: terminal_fold_oop
+  oop_bet:
+    seat: ip
+    actions:
+      CALL: terminal_showdown
+      FOLD: terminal_fold_ip
+
+terminals:
+  terminal_check_check:
+    type: showdown
+  terminal_showdown:
+    type: showdown
+  terminal_fold_oop:
+    type: fold
+    folder: oop
+  terminal_fold_ip:
+    type: fold
+    folder: ip

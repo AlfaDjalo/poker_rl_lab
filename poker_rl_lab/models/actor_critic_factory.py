@@ -1,106 +1,62 @@
 """
 models/actor_critic_factory.py — Builds a fully-wired PokerActorCritic.
 
-representation_model.py's RepresentationModel takes seven already-
-constructed component encoders as constructor arguments (by design —
-see that module's docstring: "Pass already-constructed instances so
-callers control hyperparameters and, critically, so the SAME
-CardEncoder instance can be shared between board_encoder and anywhere
-else per-card embeddings are needed"). Wiring those seven encoders plus
-the hand encoder plus PolicyValueNetwork by hand in every training
-script/notebook/test is repetitive and easy to get subtly wrong (e.g.
-forgetting to share the CardEncoder instance, or mismatching latent_dim
-between RepresentationModel and PolicyValueNetwork — both of which
-PokerActorCritic's own __init__ already guards against, but only once
-you've gotten this far). This module is that wiring, done once, with
-sensible defaults matching each encoder's own defaults.
+Three-role pretrained encoder wiring
+--------------------------------------
+The pretrained base_encoder (representation/pretrained_hand_encoder.py)
+is a poker-SEMANTIC card-set encoder (trained on 2/3/5-card sets for
+hand type + strength), not exclusively a "hole cards" encoder. This
+function now builds THREE separate trainable adapters over the SAME
+frozen base, each targeting the native size that actually matches its
+poker concept (see representation/composite_board_encoder.py's module
+docstring):
 
-Not a general-purpose DI framework — deliberately just one function
-(build_actor_critic) plus one dataclass of hyperparameters
-(ActorCriticConfig), per the guide's "prioritise correctness,
-simplicity" (§11).
+    hand_encoder            hole cards only, 2-card native (or Omaha's
+                             C(4,2) via CompositeHandEncoder — unchanged)
+    board_texture_encoder   board alone, decomposed into 3-card windows
+                             (CompositeBoardEncoder, window=3)
+    made_hand_encoder       hole ∪ board, decomposed into legal 5-card
+                             candidate hands per the game's showdown_type
+                             (CompositeBoardEncoder, window=5, via
+                             forward_batch_made_hand() — see
+                             representation/showdown_constraints.py for
+                             Hold'em/Omaha/Make-5 legality bounds)
+
+Each adapter has its own attn_scorer/project — separately trainable,
+despite sharing the same frozen base_encoder — since each is solving a
+different pooling problem (texture vs. made-hand strength).
+
+The previous from-scratch card_encoder.CardEncoder + board_encoder.
+BoardEncoder wiring has been REMOVED: board texture is now produced by
+the pretrained-backed board_texture_encoder instead. See the
+conversation history / commit message for the rationale (a bare board
+fed through 5-card mode was out-of-distribution for what the encoder
+was actually trained on; 3-card mode is the closer match, and the
+missing "made hand strength" signal — hole+board together — was simply
+absent from the architecture before this change).
 
 Hand encoder note
 --------------------
-build_actor_critic does NOT import representation.pretrained_hand_encoder
-(TF/Keras, per that module's docstring) at module level — only inside
-the function body, and only if the caller didn't supply their own
-hand_encoder. This keeps this module importable (and cheaply testable
-with a stub BaseHandEncoder) without a hard TensorFlow dependency for
-callers who don't need the real one yet.
-
-Composite (pretrained-encoder-backed) hole/board encoders
---------------------------------------------------------------
-Both the hand encoder and the board encoder are now wrapped in a
-decompose-and-pool adapter on top of the pretrained CardSetEncoder,
-rather than using it directly (hole cards) or a from-scratch
-CardEncoder-based module (board):
-
-    CompositeHandEncoder  (representation/composite_hand_encoder.py)
-        Wraps the raw pretrained BaseHandEncoder so hole_card_ids of
-        ANY length — 2 (hold'em), 4 (Omaha), or a hole+board composite
-        of any size — is safe to feed through
-        RepresentationModel.forward_batch()'s existing
-        hand_encoder.encode_batch(...) call, by decomposing
-        out-of-distribution sizes into native {2,3,5}-card subsets and
-        learned-pooling them. Sizes already native (2, 3, 5) pass
-        straight through with no decomposition overhead.
-
-    CompositeBoardEncoder  (representation/composite_board_encoder.py)
-        Same decompose-and-pool strategy, applied to
-        RepresentationInput.board_card_ids. Drop-in replacement for the
-        from-scratch BoardEncoder — identical forward()/forward_batch()
-        contract, so RepresentationModel and observation_adapter.py
-        needed zero changes.
-
-Both wrap the SAME underlying pretrained hand_encoder instance (one
-frozen Keras model, per the existing "Option B: hand encoder is a
-frozen, non-PyTorch feature source" boundary — representation_model.py)
-— so hole and board embeddings are built from a single shared card-set
-representation, with two SEPARATE small trainable adapters (attention
-pooling + projection) on top, one per role. This mirrors CardEncoder's
-own existing sharing pattern (one embedding table, reused by
-board_encoder and anywhere else per-card embeddings are needed) at the
-composite-set level instead of the per-card level.
-
-Frozen base + trainable adapter (why not fine-tune the base)
-------------------------------------------------------------------
-The pretrained Keras weights are never updated by PPO — every
-composite encoder's own forward pass detaches the base_encoder's output
-before pooling. Only each encoder's attn_scorer + project layers are
-trainable. This avoids catastrophic forgetting of the pretrained
-hand-strength structure under RL's noisier, sparser gradient signal,
-and keeps the whole pipeline on the documented TF/PyTorch boundary
-(no backprop into TF). See representation/composite_board_encoder.py's
-and representation/composite_hand_encoder.py's own docstrings for the
-fuller rationale. `project_hidden_dim` on both classes controls whether
-that trainable adapter is a single Linear or a small 2-layer MLP —
-default now uses the MLP (more capacity to reshape the frozen
-embedding) rather than a bare Linear.
-
-Stack/Pot encoder (added)
---------------------------
-RepresentationModel now takes a seventh component encoder,
-representation.stack_encoder.StackEncoder — see that module's and
-representation_model.py's own docstrings for why (the Representation
-Model previously carried no stack/pot/bet-to-call signal at all,
-starving every downstream policy of stack-depth awareness). Wired here
-identically to every other encoder: sensible config-driven defaults,
-built fresh per build_actor_critic() call, no sharing required (unlike
-CardEncoder, StackEncoder owns no embedding table another encoder needs
-to reuse).
+Unchanged: build_actor_critic does NOT import
+representation.pretrained_hand_encoder at module level — only inside
+the function body, only if the caller didn't supply hand_encoder.
 
 Dependencies
 ------------
-    PyTorch. representation.* (composite hand/board encoders, point/
-    game/position/history/stack encoders, representation_model),
-    models.policy_value_network, actions.abstract_action.NUM_ACTIONS.
-    TensorFlow only if hand_encoder is omitted (lazy import — see
-    above).
+    PyTorch. representation.composite_hand_encoder,
+    representation.composite_board_encoder, representation.point_encoder,
+    representation.game_encoder, representation.position_encoder,
+    representation.history_encoder, representation.stack_encoder,
+    representation.representation_model, models.policy_value_network,
+    actions.abstract_action.NUM_ACTIONS. TensorFlow only if hand_encoder
+    is omitted (lazy import).
 """
 
 from __future__ import annotations
 
+import logging
+import sys
+import warnings
 from dataclasses import dataclass
 from typing import Optional
 
@@ -116,27 +72,34 @@ from poker_rl_lab.representation.position_encoder import PositionEncoder
 from poker_rl_lab.representation.stack_encoder import StackEncoder
 from poker_rl_lab.representation.representation_model import RepresentationModel
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class ActorCriticConfig:
     """
-    Hyperparameters for build_actor_critic(). Every field mirrors a
-    constructor argument of the corresponding component encoder or
-    network — defaults here match each encoder's own default (see
-    representation/*.py, models/policy_value_network.py) rather than
-    introducing a second, possibly-drifting set of defaults.
+    Hyperparameters for build_actor_critic(). Defaults mirror each
+    encoder's own defaults.
     """
-    # CompositeHandEncoder (hole cards / hole+board composites)
-    hand_output_dim: Optional[int] = None   # None -> base_encoder.embedding_dim, no projection
+    # CompositeHandEncoder (hole cards only)
+    hand_output_dim: Optional[int] = None
     hand_attn_hidden_dim: int = 32
-    hand_project_hidden_dim: Optional[int] = 64   # MLP adapter by default — see module docstring
+    hand_project_hidden_dim: Optional[int] = 64
     hand_max_subsets: int = 12
 
-    # CompositeBoardEncoder
+    # CompositeBoardEncoder — board texture role (window=3)
     board_output_dim: int = 32
     board_attn_hidden_dim: int = 32
-    board_project_hidden_dim: Optional[int] = 64  # MLP adapter by default — see module docstring
+    board_project_hidden_dim: Optional[int] = 64
     board_max_subsets: int = 12
+    board_window: int = 3
+
+    # CompositeBoardEncoder — made-hand role (window=5, constraint-aware)
+    made_hand_output_dim: int = 32
+    made_hand_attn_hidden_dim: int = 32
+    made_hand_project_hidden_dim: Optional[int] = 64
+    made_hand_max_subsets: int = 12
+    made_hand_window: int = 5
 
     # PointEncoder
     point_score_type_dim: int = 8
@@ -174,6 +137,9 @@ class ActorCriticConfig:
     policy_hidden_dim: int = 128
     policy_num_shared_layers: int = 1
 
+    # Debugging — see composite_board_encoder.py's `debug` param.
+    debug_encoders: bool = False
+
 
 def build_actor_critic(
     hand_encoder: Optional[BaseHandEncoder] = None,
@@ -182,46 +148,21 @@ def build_actor_critic(
     """
     Construct a fully-wired PokerActorCritic from an ActorCriticConfig.
 
-    Parameters
-    ----------
-    hand_encoder : BaseHandEncoder, optional
-        The RAW (base) pretrained hole-card embedding source
-        (base_hand_encoder.py) — NOT yet wrapped in CompositeHandEncoder;
-        this function does that wrapping internally, twice (once for
-        hole cards, once for boards), sharing this same base instance
-        between both wrappers. If omitted, this function lazily imports
-        representation.pretrained_hand_encoder.PretrainedHandEncoder and
-        builds an UNTRAINED copy via .untrained() — sufficient for
-        pipeline/shape testing (see that module's own docstring) but
-        carrying NO poker knowledge; do not use the omitted-argument
-        path for real training. Once the pretrained .keras file is
-        available, pass
-        ``PretrainedHandEncoder.from_file("path/to/encoder_model.keras")``
-        explicitly instead.
-    config : ActorCriticConfig, optional
-        Hyperparameters. Defaults to ``ActorCriticConfig()`` (every
-        encoder's own defaults) if omitted.
-
-    Returns
-    -------
-    PokerActorCritic
-        Ready for PPOTrainer.collect_rollouts() / .update(), or direct
-        .act() / .evaluate_actions() calls.
+    See module docstring for the three-role pretrained encoder wiring
+    (hand / board_texture / made_hand), all sharing `hand_encoder` as
+    their frozen base with separate trainable adapters.
     """
     cfg = config or ActorCriticConfig()
 
     if hand_encoder is None:
-        # Lazy import: keeps this module (and anything that only wants
-        # ActorCriticConfig / the wiring logic) importable without a
-        # hard TensorFlow dependency. See module + function docstrings.
         from poker_rl_lab.representation.pretrained_hand_encoder import PretrainedHandEncoder
 
         hand_encoder = PretrainedHandEncoder.untrained()
+        _warn_untrained_encoder(caller="build_actor_critic (hand_encoder=None)")
 
-    # Both composite encoders wrap the SAME base pretrained instance —
-    # one frozen Keras model, two separate small trainable adapters on
-    # top (hole-role pooling/projection vs. board-role pooling/
-    # projection). See module docstring's "Composite encoders" section.
+    _log_encoder_provenance(hand_encoder)
+
+    # -- Role 1: hole cards only (2-card native / Omaha C(4,2)) -----------
     composite_hand_encoder = CompositeHandEncoder(
         base_encoder=hand_encoder,
         output_dim=cfg.hand_output_dim,
@@ -230,12 +171,26 @@ def build_actor_critic(
         max_subsets=cfg.hand_max_subsets,
     )
 
-    board_encoder = CompositeBoardEncoder(
+    # -- Role 2: board texture (3-card windows) ----------------------------
+    board_texture_encoder = CompositeBoardEncoder(
         hand_encoder=hand_encoder,
         output_dim=cfg.board_output_dim,
         attn_hidden_dim=cfg.board_attn_hidden_dim,
         project_hidden_dim=cfg.board_project_hidden_dim,
         max_subsets=cfg.board_max_subsets,
+        window=cfg.board_window,
+        debug=cfg.debug_encoders,
+    )
+
+    # -- Role 3: made hand (hole ∪ board, constraint-aware 5-card) --------
+    made_hand_encoder = CompositeBoardEncoder(
+        hand_encoder=hand_encoder,
+        output_dim=cfg.made_hand_output_dim,
+        attn_hidden_dim=cfg.made_hand_attn_hidden_dim,
+        project_hidden_dim=cfg.made_hand_project_hidden_dim,
+        max_subsets=cfg.made_hand_max_subsets,
+        window=cfg.made_hand_window,
+        debug=cfg.debug_encoders,
     )
 
     point_encoder = PointEncoder(
@@ -272,7 +227,8 @@ def build_actor_critic(
 
     representation_model = RepresentationModel(
         hand_encoder=composite_hand_encoder,
-        board_encoder=board_encoder,
+        board_encoder=board_texture_encoder,
+        made_hand_encoder=made_hand_encoder,   # NEW
         point_encoder=point_encoder,
         game_encoder=game_encoder,
         position_encoder=position_encoder,
@@ -291,3 +247,47 @@ def build_actor_critic(
     )
 
     return PokerActorCritic(representation_model, policy_value_network)
+
+
+# ---------------------------------------------------------------------------
+# Debugging helpers
+# ---------------------------------------------------------------------------
+
+def _warn_untrained_encoder(caller: str) -> None:
+    message = (
+        f"[build_actor_critic] hand_encoder=None passed in from {caller!r} — "
+        f"falling back to PretrainedHandEncoder.untrained(). This ONE instance "
+        f"backs ALL THREE roles (hole, board-texture, made-hand) — this policy "
+        f"is training with NO pretrained poker-hand knowledge anywhere. Pass "
+        f"hand_encoder=PretrainedHandEncoder.from_file(...) explicitly if this "
+        f"is not a pipeline/shape-testing run."
+    )
+    warnings.warn(message, RuntimeWarning, stacklevel=3)
+    logger.warning(message)
+    print(f"WARNING: {message}", file=sys.stderr)
+
+
+def _log_encoder_provenance(hand_encoder: BaseHandEncoder) -> None:
+    is_pretrained = getattr(hand_encoder, "is_pretrained", None)
+    embedding_dim = getattr(hand_encoder, "embedding_dim", "?")
+
+    if is_pretrained is True:
+        logger.info(
+            f"[build_actor_critic] hand_encoder is PRETRAINED "
+            f"(embedding_dim={embedding_dim}). Shared as the frozen base "
+            f"for hole / board-texture / made-hand adapters."
+        )
+    elif is_pretrained is False:
+        message = (
+            f"[build_actor_critic] hand_encoder is UNTRAINED "
+            f"(embedding_dim={embedding_dim}) — shared as the frozen base "
+            f"for ALL THREE roles (hole / board-texture / made-hand)."
+        )
+        logger.warning(message)
+        print(f"WARNING: {message}", file=sys.stderr)
+    else:
+        logger.warning(
+            f"[build_actor_critic] hand_encoder of type "
+            f"{type(hand_encoder).__name__} does not expose `is_pretrained` — "
+            f"cannot verify whether pretrained weights are actually loaded."
+        )

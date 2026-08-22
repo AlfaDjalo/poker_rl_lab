@@ -1,0 +1,49 @@
+# representation/showdown_constraints.yaml — legal hole/board card-count
+# splits for made-hand decomposition, per showdown_type. See
+# representation/showdown_constraints.py's module docstring for the full
+# semantics of each field.
+#
+# DRAW/BADUGI are deliberately omitted — draw-style games typically have
+# no board, so made-hand decomposition (which is fundamentally a
+# hole+board combination question) doesn't apply the same way. Missing
+# entries fall back to HOLDEM's bounds, loudly warned once per process.
+
+HOLDEM:
+  # Any number of (the 2 available) hole cards may combine with the
+  # rest from the board, total 5. Equivalent to CardUsageConstraint()'s
+  # own defaults — spelled out explicitly here rather than relying on
+  # get_constraint()'s fallback, so this entry is self-documenting and
+  # survives independently of what the fallback constant happens to be.
+  min_hole: 0
+  max_hole: 5
+  min_board: 0
+  max_board: 5
+  exact_board: false
+
+OMAHA:
+  # EXACTLY 2 hole + 3 board, always — Omaha's defining showdown rule.
+  # min_board/max_board pinned to 3 (not exact_board: true) because
+  # Omaha's board requirement is a fixed count of 3, not "however many
+  # board cards happen to be dealt" — the two are the same on the river
+  # (5 board cards dealt, but only 3 may ever be used) but would differ
+  # earlier in a hand, and exact_board's semantics are specifically for
+  # Make-5's "use ALL currently-dealt board cards" rule instead.
+  min_hole: 2
+  max_hole: 2
+  min_board: 3
+  max_board: 3
+  exact_board: false
+
+MAKE5:
+  # Board is fixed at n cards (1 <= n <= 4); the hand must use ALL n
+  # board cards plus exactly 5-n hole cards. exact_board: true pins the
+  # board count to whatever is actually dealt/visible for this point
+  # right now (see CardUsageConstraint.valid_splits) and derives
+  # hole_count = 5 - board_count from it directly — min_hole/max_hole
+  # are ignored in this mode, kept at the permissive defaults for
+  # clarity only.
+  min_hole: 0
+  max_hole: 5
+  min_board: 0
+  max_board: 5
+  exact_board: true

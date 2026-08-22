@@ -1,0 +1,166 @@
+name: omaha_full_duo
+description: >
+  A COMPLETE heads-up Omaha (PLO) hand: preflop, flop, turn, and river
+  all have a real betting round. Identical tree shape to
+  holdem_full_duo.yaml — see that file's own docstring for the full
+  betting-sequence explanation and the "no re-raise per street"
+  limitation shared by every DuoGameConfig tree. Only the underlying
+  game differs here: 4 hole cards, Omaha-style showdown (exactly 2 of
+  the 4 hole cards + exactly 3 of the 5 board cards), via omaha.yaml.
+
+game_name: omaha
+small_blind: 1
+big_blind: 2
+
+seats:
+  - id: sb
+    acts_first: true
+  - id: bb
+    acts_first: false
+
+dealer_seat: sb
+
+stack:
+  mode: fixed_bb
+  stack_bb: 100.0
+
+pot:
+  mode: blinds
+
+deal:
+  street_index: 0
+  hole_cards_per_player: 4
+  node_count: 5
+  deal_board: true
+  reveal_at_start: false
+
+start_node: preflop_sb
+
+nodes:
+  # ---------------- Preflop ----------------
+  preflop_sb:
+    seat: sb
+    actions:
+      FOLD: terminal_fold_sb
+      CALL: preflop_bb_option
+      BET_100: preflop_sb_raise
+
+  preflop_bb_option:
+    seat: bb
+    actions:
+      CHECK: deal_flop
+      BET_100: preflop_bb_raise_after_limp
+
+  preflop_bb_raise_after_limp:
+    seat: sb
+    actions:
+      CALL: deal_flop
+      FOLD: terminal_fold_sb
+
+  preflop_sb_raise:
+    seat: bb
+    actions:
+      CALL: deal_flop
+      FOLD: terminal_fold_bb
+
+  # ---------------- Flop ----------------
+  deal_flop:
+    type: deal
+    node_indices: [0, 1, 2]
+    next: flop_bb
+
+  flop_bb:
+    seat: bb
+    actions:
+      CHECK: flop_sb_option
+      BET_100: flop_bb_bet
+
+  flop_sb_option:
+    seat: sb
+    actions:
+      CHECK: deal_turn
+      BET_100: flop_sb_bet_after_check
+
+  flop_sb_bet_after_check:
+    seat: bb
+    actions:
+      CALL: deal_turn
+      FOLD: terminal_fold_bb
+
+  flop_bb_bet:
+    seat: sb
+    actions:
+      CALL: deal_turn
+      FOLD: terminal_fold_sb
+
+  # ---------------- Turn ----------------
+  deal_turn:
+    type: deal
+    node_indices: [3]
+    next: turn_bb
+
+  turn_bb:
+    seat: bb
+    actions:
+      CHECK: turn_sb_option
+      BET_100: turn_bb_bet
+
+  turn_sb_option:
+    seat: sb
+    actions:
+      CHECK: deal_river
+      BET_100: turn_sb_bet_after_check
+
+  turn_sb_bet_after_check:
+    seat: bb
+    actions:
+      CALL: deal_river
+      FOLD: terminal_fold_bb
+
+  turn_bb_bet:
+    seat: sb
+    actions:
+      CALL: deal_river
+      FOLD: terminal_fold_sb
+
+  # ---------------- River ----------------
+  deal_river:
+    type: deal
+    node_indices: [4]
+    next: river_bb
+
+  river_bb:
+    seat: bb
+    actions:
+      CHECK: river_sb_option
+      BET_100: river_bb_bet
+
+  river_sb_option:
+    seat: sb
+    actions:
+      CHECK: terminal_check_check
+      BET_100: river_sb_bet_after_check
+
+  river_sb_bet_after_check:
+    seat: bb
+    actions:
+      CALL: terminal_showdown
+      FOLD: terminal_fold_bb
+
+  river_bb_bet:
+    seat: sb
+    actions:
+      CALL: terminal_showdown
+      FOLD: terminal_fold_sb
+
+terminals:
+  terminal_check_check:
+    type: showdown
+  terminal_showdown:
+    type: showdown
+  terminal_fold_sb:
+    type: fold
+    folder: sb
+  terminal_fold_bb:
+    type: fold
+    folder: bb

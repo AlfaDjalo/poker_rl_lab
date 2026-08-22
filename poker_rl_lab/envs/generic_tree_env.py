@@ -6,105 +6,94 @@ mini-games.
 This is the "GenericTreeEnv" scenarios/duo_game_config.py's own
 docstring already refers to as scenarios/generic_tree_env.py's future
 home. It interprets ANY validated DuoGameConfig — push-fold-duo,
-river-duo, or a new N-seat YAML under scenarios/duo_games/ — without
-per-game Python code. push_fold_duo_env.py / river_duo_env.py become
-special cases of this one class once their trees are expressed as
-DuoGameConfig YAML.
+river-duo, double-board-plo-river, or a new N-seat YAML under
+scenarios/duo_games/ — without per-game Python code.
 
-Step 1 of the sequencing in RL_Lab_Scenario_Framework - Addendum,
-Grounding and Migration.md: "Generalize the node graph from 2 seats to
-N seats" — this file is the executor half of that step (duo_game_config.py
-was the schema half).
-
-Showdown resolution — why an N-seat-native evaluator, not hero_wins()
+Showdown resolution — POINTS-AWARE (PATCHED)
 --------------------------------------------------------------------------
-push_fold_duo_env.py / river_duo_env.py both used a 2-seat-only
-``hero_wins(hero_mask, villain_mask, board_mask) -> Optional[bool]``
-evaluator contract — meaningless for N > 2 seats (there's no single
-"villain"). This env instead takes a `scoring_engine` duck-typing
-poker_engine.scoring's existing shared surface:
-``evaluate(player_masks, board_mask, score_type, showdown_type) ->
-List[ScoreResult]`` (poker_engine/scoring/scoring_engine.py,
-mock_scoring_engine.py — the SAME interface ShowdownResolver and
-envs/engine_scoring_evaluator.py already use). ScoreResult comparison
-(`>`, `==`) is already N-player-native, so side-pot resolution below is
-a straightforward layering over `evaluate()`'s output — no hero/villain
-framing needed anywhere.
+Earlier versions of this file resolved every showdown by flattening
+every dealt board node card into ONE board mask and calling
+scoring_engine.evaluate() exactly once, with a single game-wide
+score_type/showdown_type. That is correct for a single-board,
+single-point game (push_fold_duo, river_duo — holdem's rules declare
+exactly one HIGH point over one node_set) but silently WRONG for any
+split_pot/multi-point game such as double_board_plo: it merged both
+independent 5-card boards' cards into one pseudo-10-card board and
+evaluated a single Omaha hand off it, instead of splitting the pot
+evenly across the two independent boards the way
+poker_engine.showdown.showdown_resolver.ShowdownResolver._resolve_split_pot
+does (`num_components = number of points, not point x board pairs`).
+
+This version loads the real `rules` object for `config.game_name` (via
+the same poker_engine.games.loader.load_game() every other real-Engine
+entry point in this codebase uses) and resolves each side pot PER
+POINT, mirroring ShowdownResolver's own split_pot algorithm:
+
+    - Each point's board mask is built from ITS OWN node_sets (not the
+      env's flattened self._board_mask).
+    - A point spanning multiple node_sets uses the BEST score across
+      them per player (best-of), matching
+      ShowdownResolver._best_scores_for_point.
+    - Each side pot's chip amount is divided evenly across
+      len(rules.points) components (remainder to the first components),
+      matching ShowdownResolver._resolve_split_pot's own remainder
+      handling.
+    - Each point uses ITS OWN score_type and
+      (showdown_type_override or rules.showdown_type) — not a single
+      env-wide constant — matching
+      ShowdownResolver._evaluate_all_points.
+
+Both rules.payout_type values are supported:
+    "split_pot"  each point independently wins an even share of the
+                 pot (double_board_plo: two boards, half the pot each).
+                 Mirrors ShowdownResolver._resolve_split_pot.
+    "points"     every point is tallied (1 / len(winners) per point a
+                 seat wins), and whoever has the most points takes the
+                 ENTIRE pot layer (tie = chop). Mirrors
+                 ShowdownResolver._resolve_points_game. This is what
+                 "holdem" (push_fold_duo, river_duo) actually declares
+                 — a single-point tally degenerates to exactly the same
+                 winner(s) split_pot would have produced with one
+                 component, so this was silently correct before this
+                 patch only because holdem has just one point; it must
+                 be implemented for real once any point is added.
+Any other payout_type raises NotImplementedError loudly rather than
+silently mis-paying.
+
+Monte Carlo showdown averaging (num_showdown_samples) — UNCHANGED IN SPIRIT
+-----------------------------------------------------------------------------
+Still averages `num_showdown_samples` independent runouts when ANY
+point's board is incomplete (see _showdown_boards_incomplete()), and
+degenerates to exactly 1 sample when every point's board is already
+fully dealt (river_duo, double_board_plo_river). Runouts across
+DIFFERENT points within the same sample never share a card — each
+point's completion reserves its drawn cards before the next point's
+completion runs (see _complete_point_board_for_showdown's
+`reserved_mask` parameter) — since two independent physical boards can
+never legitimately share a card.
 
 Why side-pot layering even for a "no re-raise" tree
 --------------------------------------------------------
-Every DuoGameConfig built so far uses equal starting stacks (see
-duo_game_config.py's StackConfig docstring), so in practice every
-showdown has equal commitments and side pots degenerate to one pot.
-But nothing in the schema *forces* equal stacks, and getting side-pot
-math right once, generically, costs little — so _resolve_showdown()
-below builds real side-pot layers (mirroring
-poker_engine/state/game_state.py's own build_side_pots()) rather than
-assuming heads-up-style single-pot-plus-excess.
-
-Monte Carlo showdown averaging (num_showdown_samples)
------------------------------------------------------
-**THIS WAS THE BUG.** A game like push-fold-duo is dealt with an EMPTY
-board (0 known community cards) — every showdown therefore needs a full
-5-card random runout before it can be scored at all (see
-_complete_board_for_showdown). Previously this env drew exactly ONE
-runout per hand and scored it — i.e. every hand's terminal reward was a
-single noisy Bernoulli-ish sample of equity, not an estimate of it. That
-is enormously higher-variance than what envs.monte_carlo_evaluator.
-MonteCarloEquityEvaluator already exists to fix elsewhere in this
-codebase (envs/push_fold_env.py's benchmark path) — but nothing in this
-file ever called it. High-variance advantage estimates are exactly what
-slows down PPO's convergence toward the Nash-shaped hand-range grids
-(pairs/aces/broadways pushing/calling more) — the policy has to average
-over many more hands before the useful gradient signal rises above the
-runout noise floor.
-
-_resolve_showdown() below now draws `num_showdown_samples` independent
-runouts (only when the board is actually incomplete — river_duo already
-deals all 5 board cards, so `needed <= 0` and this is a no-op, exactly
-one score, same as before) and AVERAGES the resulting side-pot payouts.
-This is unbiased (mean reward is unchanged — see benchmark_rollout_
-collection.py's benchmark_mc_variance for the same before/after
-argument applied to push_fold_env.py's older MockEvaluator) and reduces
-reward variance by ~num_showdown_samples, at num_showdown_samples times
-the per-hand scoring cost (cheap relative to the neural network forward
-pass this reward eventually trains).
-
-Default is 30, matching the K used elsewhere in this codebase's own
-Monte Carlo evaluator benchmarks as a reasonable variance/cost
-trade-off. Pass num_showdown_samples=1 to recover the old single-sample
-behaviour exactly (e.g. for tests wanting the cheapest possible
-resolution — MockScoringEngine-backed tests are unaffected either way,
-since MockScoringEngine ignores the board entirely and always returns
-the same ranking regardless of runout).
+Every DuoGameConfig built so far uses equal starting stacks, so in
+practice every showdown has equal commitments and side pots degenerate
+to one pot. But nothing in the schema *forces* equal stacks, so
+_resolve_showdown() still builds real side-pot layers.
 
 Why a showdown terminal never has a folded seat to exclude
 ------------------------------------------------------------
 In this schema every branch is authored explicitly: a path that
 includes a FOLD action leads to a "fold" terminal, never a "showdown"
-terminal (see duo_game_config.py's TerminalConfig — a config where a
-fold branch targets a showdown terminal is a config bug, not something
-this env needs to defend against generically). So _resolve_showdown()
-can safely assume every seat is still live.
-
-What this does NOT do yet
------------------------------
-No scenario generator is provided here — GenericTreeScenario below is
-the input shape a future GenericTreeScenarioGenerator must produce (the
-next step in the sequencing). push_fold_duo_env.py / river_duo_env.py
-and their training loops are NOT deleted or rewired to this class yet;
-that migration happens once the scenario generator exists and
-duo_training_loop.py / river_duo_training_loop.py are generalized to
-call config.seat_index()-keyed seats instead of SB_SEAT/BB_SEAT /
-OOP_SEAT/IP_SEAT constants.
+terminal. So _resolve_showdown() can safely assume every seat is still
+live.
 
 Dependencies
 ------------
     scenarios.duo_game_config, envs.observations, actions.abstract_action
     (pure Python — no poker_eval needed to import this file). poker_eval
-    / mock_poker_eval only touched at construction time, for the default
-    ScoreType.HIGH / ShowdownType.HOLDEM values — same shim pattern as
-    every other entry point in this codebase.
+    / mock_poker_eval and poker_engine.games.loader are only touched at
+    construction time (loading rules, picking default score/showdown
+    types) — same shim pattern as every other entry point in this
+    codebase.
 """
 
 from __future__ import annotations
@@ -115,7 +104,7 @@ from typing import Dict, List, Optional, Tuple
 import random
 
 try:
-    import poker_rl_lab.poker_eval as poker_eval # noqa: F401  (prefer the real extension if present)
+    import poker_rl_lab.poker_eval as poker_eval  # noqa: F401  (prefer the real extension if present)
 except ImportError:
     import poker_rl_lab.mock_poker_eval as mock_poker_eval
 
@@ -134,6 +123,8 @@ from poker_rl_lab.envs.observations import (
 )
 from poker_rl_lab.actions.abstract_action import AbstractAction, ActionType, NUM_ACTIONS
 from poker_rl_lab.scenarios.duo_game_config import DuoGameConfig, DealNodeConfig
+from poker_rl_lab.envs.generic_tree_showdown_adapter import resolve_generic_tree_showdown
+
 
 def _mask_to_cards(mask: int) -> Tuple[int, ...]:
     return tuple(i for i in range(52) if (mask >> i) & 1)
@@ -153,6 +144,19 @@ def _default_scoring_engine():
         return MockScoringEngine()
 
 
+def _load_rules(game_name: str):
+    """
+    Load the real GameRules for `game_name` — same loader
+    observation_adapter.ObservationAdapter._get_game() uses. This is
+    what makes _resolve_showdown() points-aware (see module docstring):
+    GenericTreeEnv previously never had access to rules.points at all.
+    """
+    from poker_engine.games.loader import load_game
+
+    _, rules = load_game(game_name)
+    return rules
+
+
 # ---------------------------------------------------------------------------
 # Scenario input shape
 # ---------------------------------------------------------------------------
@@ -162,18 +166,10 @@ class GenericTreeScenario:
     """
     Initial conditions for one GenericTreeEnv episode.
 
-    Unlike scenarios.base_scenario.BaseScenario (which describes an
-    arbitrary mid-hand Engine state for the standard single-hero envs),
-    this only carries what a fixed-tree config's own scenario generator
-    needs to produce: per-seat hole cards / starting stacks / chips
-    already posted before the tree starts, and an optional dealt board.
-
     Attributes
     ----------
     config_name : str
-        Must equal the DuoGameConfig.name this scenario targets — a
-        cheap sanity check against feeding a push-fold-duo scenario
-        into a river-duo env or vice versa.
+        Must equal the DuoGameConfig.name this scenario targets.
     hole_masks : Tuple[int, ...]
         One 52-bit hand bitmask per seat, indexed by seat index.
     board_mask : int
@@ -185,17 +181,11 @@ class GenericTreeScenario:
         Each seat's stack BEFORE any of `posted` is subtracted, one per
         seat, indexed by seat index.
     posted : Tuple[int, ...]
-        Chips each seat has already committed before the first decision
-        (blinds for a "blinds"-pot config; 0 for every seat in a
-        "randomized_bb"-pot config, since that pot mode represents
-        already-in-the-middle chips with no per-seat attribution — see
-        duo_game_config.py's PotConfig docstring).
+        Chips each seat has already committed before the first decision.
     dealer_position : int
         Kept for parity with BaseScenario; GenericTreeEnv actually
         derives dealer_position from config.dealer_seat at every
-        observation instead (see _build_obs), so this field is
-        currently unused by the env but reserved for a future generator
-        that wants per-episode button rotation.
+        observation instead (see _build_obs).
     """
     config_name: str
     hole_masks: Tuple[int, ...]
@@ -231,10 +221,6 @@ class TreeStepResult:
     """
     Result of one GenericTreeEnv.step() call.
 
-    Mirrors push_fold_duo_env.DuoStepResult / river_duo_env's own step
-    result shape, generalized from SB_SEAT/BB_SEAT-keyed (or
-    OOP_SEAT/IP_SEAT-keyed) rewards to arbitrary seat-INDEX keys.
-
     Attributes
     ----------
     obs : StructuredObservation, optional
@@ -267,31 +253,24 @@ class GenericTreeEnv:
     ----------
     config : DuoGameConfig
     scoring_engine : optional
-        See module docstring's "Showdown resolution" section. Defaults
-        to CppScoringEngine, falling back to MockScoringEngine.
+        Defaults to CppScoringEngine, falling back to MockScoringEngine.
     score_type, showdown_type : optional
-        Forwarded to scoring_engine.evaluate(). Default
-        poker_eval.ScoreType.HIGH / poker_eval.ShowdownType.HOLDEM —
-        every config built on this schema so far is a high-hand
-        hold'em showdown.
+        FALLBACK values only — see module docstring's "Showdown
+        resolution" section. Each point now supplies its own
+        score_type; showdown_type is used only when a point doesn't
+        declare showdown_type_override, and itself defaults to
+        rules.showdown_type (loaded from config.game_name) rather than
+        a hardcoded HOLDEM constant, unless explicitly overridden here.
     num_showdown_samples : int
         Number of independent board runouts averaged per showdown when
-        the board is incomplete at terminal time (e.g. push-fold-duo,
-        which deals no board at all). See module docstring's "Monte
-        Carlo showdown averaging" section — THIS is the fix for slow /
-        noisy convergence toward Nash-shaped hand-range grids. Default
-        30. Has zero effect (falls back to exactly 1 sample) whenever
-        the board is already fully dealt (river_duo and friends), and
-        zero effect on outcome (only on wasted repeated calls) when
-        scoring_engine is MockScoringEngine, since that mock ignores
-        the board.
+        ANY point's board is incomplete at terminal time. Default 30.
+        Degenerates to exactly 1 sample when every point's board is
+        already fully dealt, and has no effect on outcome (only on
+        wasted repeated calls) when scoring_engine is MockScoringEngine.
     """
 
     #: Bet-type actions this schema's fixed (non-continuous-sizing)
-    #: trees actually use. ALL_IN = shove entire stack. BET_100 =
-    #: pot-sized bet (river_duo.yaml's only bet action). Any other
-    #: bet-type ActionType referenced by a node's YAML is a config
-    #: error caught in _apply_bet() below, not silently mis-sized.
+    #: trees actually use.
     _SUPPORTED_BET_TYPES = (ActionType.ALL_IN, ActionType.BET_100)
 
     def __init__(
@@ -305,11 +284,22 @@ class GenericTreeEnv:
     ) -> None:
         self.config = config
         self._scoring_engine = scoring_engine or _default_scoring_engine()
+
+        # -- Points-aware showdown setup (NEW) --------------------------
+        self._rules = _load_rules(config.game_name)
+        self._points = self._rules.points
+        self._payout_type = self._rules.payout_type
+        if not self._points:
+            raise ValueError(
+                f"game {config.game_name!r} declares zero showdown points "
+                f"— GenericTreeEnv cannot resolve a showdown for it."
+            )
+
         self._score_type = (
             score_type if score_type is not None else poker_eval.ScoreType.HIGH
         )
         self._showdown_type = (
-            showdown_type if showdown_type is not None else poker_eval.ShowdownType.HOLDEM
+            showdown_type if showdown_type is not None else self._rules.showdown_type
         )
         if num_showdown_samples < 1:
             raise ValueError(
@@ -336,6 +326,7 @@ class GenericTreeEnv:
         self._revealed_nodes: set = set()
 
         self._runout_rng = random.Random(runout_seed)
+        self._use_real_rules_showdown = self.config.deal.deal_board
 
     # ------------------------------------------------------------------
     # Public API
@@ -441,12 +432,6 @@ class GenericTreeEnv:
     # ------------------------------------------------------------------
 
     def _apply_call(self, seat: int) -> int:
-        """
-        Match the largest total commitment among all OTHER seats. This
-        schema has no re-raises, so at any CALL decision there is
-        exactly one live bet size on the table to match — the max
-        already committed by anyone else on this path.
-        """
         to_match = max(
             (self._committed[i] for i in range(len(self._committed)) if i != seat),
             default=0,
@@ -469,9 +454,6 @@ class GenericTreeEnv:
         if atype == ActionType.ALL_IN:
             amount = self._stack[seat]
         else:  # BET_100 — pot-sized bet, relative to the FULL pot
-            # (dead-money carry + everything committed this street), not
-            # just this street's action — otherwise a river-duo bet
-            # sized off pre-existing pot money is silently undersized.
             pot = self._pot_carry + sum(self._committed)
             amount = min(pot, self._stack[seat])
 
@@ -482,16 +464,6 @@ class GenericTreeEnv:
         return amount
 
     def _advance_through_deal_nodes(self, node_id: str) -> str:
-        """
-        Walk forward from node_id through any chain of automatic
-        DealNodeConfig nodes, revealing their board cards as each is
-        passed through, until landing on a decision node or terminal.
-        No seat acts and no AbstractAction is consumed for any node
-        passed through here — this is the Environment executing the
-        state machine's own automatic transitions.
-        __post_init__'s deal-only-cycle check guarantees termination
-        for any validated DuoGameConfig.
-        """
         while not self.config.is_terminal(node_id):
             node = self.config.nodes[node_id]
             if not isinstance(node, DealNodeConfig):
@@ -501,14 +473,6 @@ class GenericTreeEnv:
         return node_id
 
     def _visible_node_cards(self) -> Tuple[Optional[int], ...]:
-        """
-        Board as currently OBSERVABLE: self._node_cards_full with every
-        index not yet passed through by a deal node masked back to
-        None. For deal.reveal_at_start=True configs (the default —
-        every config before deal nodes existed) self._revealed_nodes is
-        the full index set from reset() onward, so this is a no-op and
-        behaviour is unchanged.
-        """
         return tuple(
             c if i in self._revealed_nodes else None
             for i, c in enumerate(self._node_cards_full)
@@ -542,20 +506,47 @@ class GenericTreeEnv:
             rewards = self._split_flat(winner_seats)
             info = {"outcome": "fold", "terminal": terminal_id, "folders": term.folders}
         else:
-            rewards = self._resolve_showdown()
+            if self._use_real_rules_showdown:
+                payouts = resolve_generic_tree_showdown(
+                    game_name=self.config.game_name,
+                    hole_masks=self._hole_masks,
+                    committed=self._committed,
+                    pot_carry=self._pot_carry,
+                    node_cards_full=self._node_cards_full,
+                    node_count=self.config.deal.node_count,
+                    scoring_engine=self._scoring_engine,
+                    num_showdown_samples=self._num_showdown_samples,
+                    runout_rng=self._runout_rng,
+                )
+                n = len(self.config.seats)
+                final_stack = [self._stack[i] + payouts.get(i, 0) for i in range(n)]
+                rewards = {
+                    seat: float(final_stack[seat] - self._starting_stack[seat])
+                    for seat in range(n)
+                }
+            else:
+                rewards = self._resolve_showdown()
             info = {"outcome": "showdown", "terminal": terminal_id}
 
         return TreeStepResult(obs=None, rewards=rewards, done=True, info=info)
 
+    # def _resolve_terminal(self, terminal_id: str) -> TreeStepResult:
+    #     term = self.config.terminals[terminal_id]
+    #     self._done = True
+
+    #     if term.type == "fold":
+    #         winner_seats = [
+    #             self.config.seat_index(sid) for sid in self.config.fold_winners(terminal_id)
+    #         ]
+    #         rewards = self._split_flat(winner_seats)
+    #         info = {"outcome": "fold", "terminal": terminal_id, "folders": term.folders}
+    #     else:
+    #         rewards = self._resolve_showdown()
+    #         info = {"outcome": "showdown", "terminal": terminal_id}
+
+    #     return TreeStepResult(obs=None, rewards=rewards, done=True, info=info)
+
     def _split_flat(self, winner_seats: List[int]) -> Dict[int, float]:
-        """
-        Fold-terminal payout: the entire dead pot (everything every seat
-        has committed) splits evenly across winner_seats. No side-pot
-        layering needed here — folded seats simply forfeit what they
-        committed, they are never owed anything back. Reduces exactly
-        to push_fold_duo_env.py's own sb_fold/bb_fold reward formula
-        for the 2-seat case.
-        """
         n = len(self.config.seats)
         final_stack = list(self._stack)
         pot = self._pot_carry + sum(self._committed)
@@ -570,59 +561,87 @@ class GenericTreeEnv:
             for seat in range(n)
         }
 
-    def _complete_board_for_showdown(self, player_masks: List[int]) -> int:
-        """
-        Real HOLDEM/HIGH scoring needs >= 5 known cards per player.
-        Games with a partial or absent board (push-fold: 0 cards; a
-        future flop/turn config: 3-4 cards) need the remainder filled
-        with a random runout before scoring — mirrors
-        envs.poker_eval_evaluator.PokerEvalEvaluator._complete_board /
-        envs.engine_scoring_evaluator.EngineScoringEvaluator._complete_board.
-        No-op for river_duo (already 5 board cards).
+    # ------------------------------------------------------------------
+    # Points-aware showdown (PATCHED — see module docstring)
+    # ------------------------------------------------------------------
 
-        Draws a FRESH runout on every call — callers that want a
-        Monte-Carlo-averaged showdown (see _resolve_showdown) call this
-        multiple times per hand and average the resulting payouts.
+    def _node_set_mask(self, node_set) -> int:
+        """Card mask for one point's node_set, from the hand's true
+        dealt cards (self._node_cards_full — always fully populated by
+        the scenario generator regardless of what's been *revealed* to
+        the policy so far; showdown resolution needs the truth, not the
+        observation)."""
+        mask = 0
+        for idx in node_set:
+            if idx < len(self._node_cards_full) and self._node_cards_full[idx] is not None:
+                mask |= 1 << self._node_cards_full[idx]
+        return mask
+
+    def _showdown_boards_incomplete(self) -> bool:
+        """True if ANY point's ANY node_set has fewer than 5 known
+        cards — drives whether Monte Carlo averaging (num_samples > 1)
+        is needed at all. Mirrors the old single-board `needed > 0`
+        check, generalized across every point/node_set."""
+        for point_def in self._points:
+            for node_set in point_def.node_sets:
+                mask = self._node_set_mask(node_set)
+                if 5 - bin(mask).count("1") > 0:
+                    return True
+        return False
+
+    def _complete_point_board_for_showdown(
+        self, board_mask: int, reserved_mask: int, player_masks: List[int]
+    ) -> int:
         """
-        needed = 5 - bin(self._board_mask).count("1")
+        Fill one point's board mask up to 5 cards with a random runout,
+        excluding every card already known (hole cards, this board's
+        own dealt cards) AND every card already reserved for a
+        DIFFERENT point's board this same sample (`reserved_mask`) —
+        two independent physical boards can never legitimately share a
+        card, so runouts must not overlap across points within one
+        Monte Carlo sample.
+        """
+        needed = 5 - bin(board_mask).count("1")
         if needed <= 0:
-            return self._board_mask
+            return board_mask
 
-        used_mask = self._board_mask
+        used_mask = board_mask | reserved_mask
         for m in player_masks:
             used_mask |= m
         available = [c for c in range(52) if not (used_mask >> c) & 1]
 
         if len(available) < needed:
             raise RuntimeError(
-                f"Not enough cards left to complete the board for showdown: "
-                f"need {needed}, have {len(available)}."
+                f"Not enough cards left to complete a point's board for "
+                f"showdown: need {needed}, have {len(available)}."
             )
         runout = self._runout_rng.sample(available, needed)
-        mask = self._board_mask
+        mask = board_mask
         for c in runout:
             mask |= 1 << c
         return mask
 
     def _resolve_showdown(self) -> Dict[int, float]:
         """
-        Side-pot-aware, Monte-Carlo-averaged showdown payout.
+        Side-pot-aware, POINTS-aware, Monte-Carlo-averaged showdown
+        payout. See module docstring's "Showdown resolution" section
+        for the full rationale — this replaces the old single-flat-
+        board implementation.
 
-        Side-pot STRUCTURE (which seats are eligible for which pot
-        layer, and each layer's chip amount) depends only on
-        self._committed — it is identical across every runout sample,
-        so it's computed once. Only the WINNER of each pot layer
-        depends on the sampled board, so that part is what gets
-        resampled/averaged num_showdown_samples times (see module
-        docstring's "Monte Carlo showdown averaging" section — this is
-        the actual fix for slow-converging hand-range grids).
-
-        When the board is already fully dealt (needed <= 0 inside
-        _complete_board_for_showdown, e.g. river_duo), every "sample"
-        returns the exact same board, so this degenerates to exactly
-        one evaluate() call regardless of num_showdown_samples — no
-        wasted work.
+        Supports both rules.payout_type values — "split_pot" and
+        "points" — see module docstring's "Showdown resolution"
+        section for which algorithm each uses. Any other payout_type
+        raises NotImplementedError loudly rather than silently
+        mis-paying.
         """
+        if self._payout_type not in ("split_pot", "points"):
+            raise NotImplementedError(
+                f"GenericTreeEnv._resolve_showdown only supports "
+                f"payout_type 'split_pot' or 'points' (game "
+                f"{self.config.game_name!r} declares "
+                f"{self._payout_type!r})."
+            )
+
         n = len(self.config.seats)
         final_stack_start = list(self._stack)
 
@@ -647,28 +666,94 @@ class GenericTreeEnv:
             side_pots = [(self._pot_carry, list(range(n)))]
 
         player_masks = [self._hole_masks[i] for i in range(n)]
+        num_points = len(self._points)
 
-        # Board is complete (river-style configs) -> exactly 1 sample,
-        # regardless of self._num_showdown_samples, since every runout
-        # would be identical anyway.
-        needed = 5 - bin(self._board_mask).count("1")
-        num_samples = self._num_showdown_samples if needed > 0 else 1
+        num_samples = (
+            self._num_showdown_samples if self._showdown_boards_incomplete() else 1
+        )
 
         accumulated_payout = [0.0] * n
 
         for _ in range(num_samples):
-            showdown_board_mask = self._complete_board_for_showdown(player_masks)
-            scores = self._scoring_engine.evaluate(
-                player_masks, showdown_board_mask, self._score_type, self._showdown_type
-            )
+            # -- score every point once per sample (best-of across each
+            #    point's own node_sets), reserving each point's runout
+            #    cards before completing the next point's board --------
+            point_scores: List[List] = []
+            reserved_mask = 0
 
+            for point_def in self._points:
+                showdown_type = (
+                    point_def.showdown_type_override
+                    if point_def.showdown_type_override is not None
+                    else self._showdown_type
+                )
+
+                best_scores: List = [None] * n
+                for node_set in point_def.node_sets:
+                    raw_mask = self._node_set_mask(node_set)
+                    board_mask = self._complete_point_board_for_showdown(
+                        raw_mask, reserved_mask, player_masks
+                    )
+                    reserved_mask |= board_mask
+
+                    scores = self._scoring_engine.evaluate(
+                        player_masks, board_mask, point_def.score_type, showdown_type
+                    )
+                    for seat in range(n):
+                        s = scores[seat]
+                        if best_scores[seat] is None or s > best_scores[seat]:
+                            best_scores[seat] = s
+
+                point_scores.append(best_scores)
+
+            # -- resolve every side pot, per the game's payout_type -----
             for pot_amount, eligible in side_pots:
-                best = max(scores[i] for i in eligible)
-                winners = [i for i in eligible if scores[i] == best]
-                share = pot_amount // len(winners)
-                remainder = pot_amount % len(winners)
-                for j, seat in enumerate(winners):
-                    accumulated_payout[seat] += share + (1 if j < remainder else 0)
+                if self._payout_type == "split_pot":
+                    # Each point independently wins an even share of
+                    # this pot layer — matches
+                    # ShowdownResolver._resolve_split_pot.
+                    base_share = pot_amount // num_points
+                    remainder = pot_amount % num_points
+
+                    for point_idx in range(num_points):
+                        component_pot = base_share + (1 if point_idx < remainder else 0)
+                        scores = point_scores[point_idx]
+
+                        best = max(scores[i] for i in eligible)
+                        winners = [i for i in eligible if scores[i] == best]
+
+                        share = component_pot // len(winners)
+                        rem = component_pot % len(winners)
+                        for j, seat in enumerate(winners):
+                            accumulated_payout[seat] += share + (1 if j < rem else 0)
+
+                else:  # "points"
+                    # Tally 1/len(winners) per point a seat wins, then
+                    # the ENTIRE pot layer goes to whoever has the most
+                    # points (tie = chop) — matches
+                    # ShowdownResolver._resolve_points_game.
+                    point_tally: Dict[int, float] = {}
+                    for point_idx in range(num_points):
+                        scores = point_scores[point_idx]
+                        best = max(scores[i] for i in eligible)
+                        winners = [i for i in eligible if scores[i] == best]
+                        share = 1.0 / len(winners)
+                        for w in winners:
+                            point_tally[w] = point_tally.get(w, 0.0) + share
+
+                    if point_tally:
+                        max_points = max(point_tally.values())
+                        pot_winners = [
+                            i for i in eligible
+                            if point_tally.get(i, 0.0) >= max_points - 1e-9
+                        ]
+                    else:
+                        pot_winners = list(eligible)
+
+                    share = pot_amount // len(pot_winners)
+                    rem = pot_amount % len(pot_winners)
+                    for j, seat in enumerate(pot_winners):
+                        accumulated_payout[seat] += share + (1 if j < rem else 0)
 
         final_stack = [
             final_stack_start[i] + accumulated_payout[i] / num_samples

@@ -1,82 +1,45 @@
 """
 representation/composite_board_encoder.py — Pretrained-encoder-backed
-board embedding, decomposing any N-card board into subsets the
-pretrained CardSetEncoder was actually trained on (2, 3, or 5 cards),
-batch-encoding those subsets, and learned-pooling the results.
+card-set embedding, serving TWO roles depending on construction:
 
-Why this exists
------------------
-representation.pretrained_hand_encoder.PretrainedHandEncoder wraps a
-Keras CardSetEncoder trained on 2-card, 3-card, and 5-card grids (see
-that module's own docstring — "existing pretrained embeddings for
-two-card, three-card, and five-card hands"), with the additional
-property that it was trained to FACTORIZE: 2- and 3-card subsets of a
-larger set carry meaningful information on their own, not just the full
-5-card composite. Feeding it a board of any other cardinality (0, 1, 4,
-6+) — which CAP's board_layout.streets configs genuinely produce, from
-hopscotch_bomb_pot's 6-node overlapping boards to a bare single-card
-node — is out-of-distribution: the grid shape never changes
-((14,4,1) regardless of occupancy — see card_utils.card_ids_to_grid),
-so it will always RUN, but nothing in training ever taught the
-conv/dense stack what a 1-, 4-, or 6-card occupancy pattern means.
+  1. Board texture (mode="board"): decomposes a single N-card board into
+     native-size windows (default 3, since a 3-card set is the closest
+     match to what the pretrained encoder was actually trained to
+     evaluate standalone — see module history / actor_critic_factory.py
+     for why 5-card windows were WRONG for a bare board).
+  2. Made hand (mode="made_hand"): decomposes hole ∪ board into legal
+     5-card candidate hands, respecting a showdown_type-specific
+     CardUsageConstraint (representation/showdown_constraints.py) —
+     Hold'em (any split), Omaha (exactly 2 hole + 3 board), Make-5
+     (exactly all board cards + however many hole cards fill out 5).
 
-Design: decompose-and-pool
-----------------------------
-Rather than ever calling the pretrained encoder outside {2, 3, 5}, this
-module:
-  1. Splits an N-card board into a covering set of native-size subsets
-     (see _decompose_indices below for the exact rule per N).
-  2. Batch-encodes EVERY subset, across the WHOLE forward_batch() call,
-     in a single hand_encoder.encode_batch() dispatch — this is the
-     one-TF-call-per-forward_batch() discipline
-     representation_model.py's own docstring already establishes as the
-     dominant cost lever (TF per-call dispatch overhead dwarfs the
-     actual conv for a single grid).
-  3. Learned-pools (small attention scorer, trainable) the resulting
-     per-subset embeddings into one fixed-size board embedding per
-     example.
-
-N=0 (preflop) and N=1 (a lone dealt node, e.g. an odd bomb-pot layout)
-have no native-size decomposition — see EMPTY/SINGLE handling below,
-each with its own small dedicated learned parameter/table rather than
-ever calling the pretrained encoder on an out-of-distribution input.
+Both roles share the same decompose -> batch-encode-via-frozen-base ->
+learned-attention-pool -> project pipeline; only how the index subsets
+are built differs. A single instance is constructed for ONE role only
+(via the `window`/`mode` constructor args) — board texture and made
+hand should be two SEPARATE instances (own attn_scorer/project), even
+though they may share the same frozen `hand_encoder` base. See
+models/actor_critic_factory.py for how the three roles (hole-only,
+board-texture, made-hand) are wired as three adapters over one base.
 
 Frozen base + trainable adapter
 ----------------------------------
-The pretrained hand_encoder's output is ALWAYS detached before pooling
-— no gradient ever flows into the frozen Keras weights (matching the
-documented TF/PyTorch boundary in representation_model.py /
-pretrained_hand_encoder.py). Only attn_scorer and project are
-nn.Parameters PPO actually updates. `project` is a 2-layer MLP
-(Linear -> ReLU -> Linear) rather than a single Linear whenever
-project_hidden_dim is given, so the trainable adapter has real capacity
-to reshape the frozen representation for the policy's actual decision
-task, not just re-scale it — see the conversation this module was
-built in for the fuller "why freeze the base, not just conveniently
-but correctly" argument.
-
-Contract (matches representation.board_encoder.BoardEncoder exactly)
-----------------------------------------------------------------------
-    forward(card_ids: Optional[Sequence[int]]) -> Tensor(output_dim,)
-    forward_batch(batch_card_ids: Sequence[Optional[Sequence[int]]])
-        -> Tensor(batch, output_dim)
-
-This is the ENTIRE surface representation_model.py calls on
-board_encoder — swapping BoardEncoder for CompositeBoardEncoder in
-models/actor_critic_factory.py's construction of RepresentationModel is
-therefore a one-line change with no other file touched.
+Unchanged from the original design: hand_encoder's output is ALWAYS
+detached before pooling; only attn_scorer and project are trained.
 
 Dependencies
 ------------
     PyTorch, numpy. representation.base_hand_encoder.BaseHandEncoder
-    (duck-typed — .encode_batch(), .embedding_dim). itertools,
-    functools (subset-index caching; pure Python, no per-call cost for
-    repeated board sizes).
+    (duck-typed). representation.showdown_constraints (made_hand mode
+    only — not imported at all for mode="board" usage beyond the
+    top-level import, which is cheap/pure-Python).
 """
 
 from __future__ import annotations
 
 import itertools
+import logging
+import sys
 from functools import lru_cache
 from typing import List, Optional, Sequence, Tuple
 
@@ -84,76 +47,112 @@ import torch
 import torch.nn as nn
 
 from poker_rl_lab.representation.base_hand_encoder import BaseHandEncoder
+from poker_rl_lab.representation.showdown_constraints import (
+    CardUsageConstraint,
+    get_constraint,
+)
 
-# Board sizes the pretrained CardSetEncoder was actually trained on —
-# see module docstring. Preference order when decomposing: try 5-card
-# windows first (most information per subset), then fall back to
-# 3-card for boards too small for a 5-window.
-_NATIVE_SIZES = (5, 3, 2)
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Subset decomposition (indices only — cached per board size, not per
-# actual hand, since which POSITIONS form a subset never depends on
-# which cards occupy them). Shared with composite_hand_encoder.py.
+# Single-list decomposition (board-texture role, and anything else that
+# wants "decompose one N-card set into native-size windows")
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=None)
-def _decompose_indices(n: int, max_subsets: int) -> Tuple[Tuple[int, ...], ...]:
+def _decompose_indices(
+    n: int, max_subsets: int, window: int = 5
+) -> Tuple[Tuple[int, ...], ...]:
     """
-    Return a tuple of index-tuples (positions into an N-card list)
-    covering the N-card set with native-size ({2,3,5}) subsets.
+    Index-tuples (positions into an N-card list) covering the N-card set
+    with subsets sized to the pretrained encoder's native training sizes.
 
     Parameters
     ----------
     n : int
         Card-set size. Must be >= 2 (0 and 1 are handled by dedicated
-        paths in the calling encoder classes, not by decomposition).
+        placeholder paths in the calling encoder, not here).
     max_subsets : int
-        Hard cap on how many subsets are returned, for large N (CAP
-        boards up to and beyond 6 cards, Omaha hole+board composites up
-        to 9 cards) — bounds both the hand_encoder.encode_batch() cost
-        and the pooling attention's sequence length. When C(n, k)
-        exceeds this cap, a deterministic evenly-strided sample of the
-        full combination list is taken (not random — see determinism
-        note below) so the same size always decomposes identically
-        run-to-run.
-
-    Returns
-    -------
-    Tuple[Tuple[int, ...], ...]
-        Each inner tuple is a set of 0-based positions into the N-card
-        list, length 2, 3, or 5.
-
-    Notes
-    -----
-    Determinism matters here for the same reason it matters everywhere
-    else in this codebase's scenario generators (scenarios/
-    scenario_generator.py's seed() contract): two runs dealing the same
-    board/hand must decompose it identically, or "same seed -> same
-    training trajectory" silently breaks. itertools.combinations()
-    already produces a fixed, deterministic order for a given n/k, so
-    a strided sample of it is reproducible without needing its own RNG.
+        Hard cap on returned subsets for large N — see class docstring.
+    window : int
+        Preferred subset size for n >= 5 (the only case with real
+        choice — n in {2,3,4} always has a fixed, unambiguous native
+        decomposition regardless of `window`). Callers pass window=3
+        for board-texture (closest to the encoder's flop-sized training
+        distribution) or window=5 for made-hand (a real candidate final
+        hand). Clamped to n if window > n.
     """
     if n == 2:
         return ((0, 1),)
     if n == 3:
         return ((0, 1, 2),)
     if n == 4:
-        # Four 3-card "drop-one" subsets — every card appears in 3 of
-        # the 4 subsets, giving reasonably even coverage of pairwise
-        # interactions without an explosion in subset count. Also
-        # exactly the set of legal Omaha-relevant triples when n=4 is a
-        # board (not a hole) — see composite_hand_encoder.py for the
-        # distinct, rules-motivated n=4 treatment used for Omaha holes.
+        # Four 3-card "drop-one" subsets — reasonable coverage
+        # regardless of role at this size.
         return tuple(itertools.combinations(range(4), 3))
 
-    # n >= 5: prefer 5-card windows (richest native size).
-    combos = list(itertools.combinations(range(n), 5))
+    w = min(window, n)
+    combos = list(itertools.combinations(range(n), w))
     if len(combos) > max_subsets:
         stride = len(combos) / max_subsets
         combos = [combos[int(i * stride)] for i in range(max_subsets)]
     return tuple(combos)
+
+
+# ---------------------------------------------------------------------------
+# Two-list, constraint-aware decomposition (made-hand role)
+# ---------------------------------------------------------------------------
+
+def _decompose_made_hand_indices(
+    n_hole: int,
+    n_board: int,
+    constraint: CardUsageConstraint,
+    max_subsets: int,
+) -> Tuple[Tuple[Tuple[int, ...], Tuple[int, ...]], ...]:
+    """
+    Every legal (hole_index_tuple, board_index_tuple) pair — each
+    totaling 5 cards — satisfying `constraint`, given the actual number
+    of hole/board cards currently available.
+
+    Returns
+    -------
+    Tuple[Tuple[Tuple[int, ...], Tuple[int, ...]], ...]
+        Possibly EMPTY — e.g. Omaha before the flop (n_board < 3), or
+        any street where n_hole + n_board < 5 (true of every street
+        before the river in Hold'em). Callers must handle the empty
+        case via a learned placeholder (see CompositeBoardEncoder.
+        no_valid_hand_embed), not assume >= 1 split always exists.
+
+    Notes
+    -----
+    Capped/strided at max_subsets across the FULL combined list of
+    (hole_combo, board_combo) pairs — not per-split — so the same
+    determinism guarantee _decompose_indices already documents (fixed
+    itertools order, evenly strided sample) applies here too.
+    """
+    splits = constraint.valid_splits(n_hole, n_board)
+    if not splits:
+        return ()
+
+    all_combos: List[Tuple[Tuple[int, ...], Tuple[int, ...]]] = []
+    for hole_count, board_count in splits:
+        hole_combos = (
+            list(itertools.combinations(range(n_hole), hole_count))
+            if hole_count > 0 else [()]
+        )
+        board_combos = (
+            list(itertools.combinations(range(n_board), board_count))
+            if board_count > 0 else [()]
+        )
+        for hc in hole_combos:
+            for bc in board_combos:
+                all_combos.append((hc, bc))
+
+    if len(all_combos) > max_subsets:
+        stride = len(all_combos) / max_subsets
+        all_combos = [all_combos[int(i * stride)] for i in range(max_subsets)]
+    return tuple(all_combos)
 
 
 # ---------------------------------------------------------------------------
@@ -162,38 +161,31 @@ def _decompose_indices(n: int, max_subsets: int) -> Tuple[Tuple[int, ...], ...]:
 
 class CompositeBoardEncoder(nn.Module):
     """
-    Board embedding built from a pretrained BaseHandEncoder, valid for
-    ANY board size (0 through arbitrarily many CAP board nodes), by
-    decomposing into native-size ({2,3,5}) subsets — see module
-    docstring for the full rationale.
+    Card-set embedding built from a pretrained BaseHandEncoder, serving
+    either the board-texture role or the made-hand role — see module
+    docstring. One instance = one role; construct TWO instances (with
+    separate trainable adapters) to use both.
 
     Parameters
     ----------
     hand_encoder : BaseHandEncoder
-        The pretrained (or untrained, for pipeline testing) card-set
-        encoder — same object type used for hole cards
-        (representation/pretrained_hand_encoder.py). NOT registered as
-        an nn.Module (it's TF/Keras-backed, frozen) — same treatment
-        RepresentationModel gives its own hand_encoder.
+        Frozen. NOT registered as an nn.Module.
     output_dim : int
-        Final board embedding dimensionality. Default 32, matching
-        BoardEncoder's own default so this is a drop-in swap with no
-        downstream dimension changes required.
+        Default 32.
     attn_hidden_dim : int
-        Hidden width of the small learned attention-scorer MLP used to
-        pool subset embeddings. Default 32.
+        Default 32.
     project_hidden_dim : int, optional
-        If given, the final projection from the frozen embedding_dim to
-        output_dim is a 2-layer MLP (Linear -> ReLU -> Linear) with
-        this hidden width, instead of a single Linear — gives the
-        trainable adapter real capacity to reshape the frozen
-        representation. Default None (single Linear).
+        2-layer MLP adapter width if given, else a single Linear.
     max_subsets : int
-        Forwarded to _decompose_indices — caps decomposition cost for
-        large boards. Default 12 (covers every board size in CAP's
-        shipped YAMLs — up to hopscotch_bomb_pot's 6-card boards, which
-        decompose to C(6,5)=6 subsets, well under the cap — with
-        headroom for larger future variants).
+        Decomposition cap. Default 12.
+    window : int
+        Preferred native window size for the board-texture (single-
+        list) path — see _decompose_indices. Default 5 (unchanged
+        behaviour for any existing caller not yet updated); pass 3
+        explicitly for board texture, per module docstring.
+    debug : bool
+        If True, prints pre/post-project variance for the first few
+        forward_batch()/forward_batch_made_hand() calls. Default False.
     """
 
     def __init__(
@@ -203,6 +195,8 @@ class CompositeBoardEncoder(nn.Module):
         attn_hidden_dim: int = 32,
         project_hidden_dim: Optional[int] = None,
         max_subsets: int = 12,
+        window: int = 5,
+        debug: bool = False,
     ) -> None:
         super().__init__()
 
@@ -210,19 +204,19 @@ class CompositeBoardEncoder(nn.Module):
             raise ValueError(f"output_dim must be > 0, got {output_dim}")
         if max_subsets < 1:
             raise ValueError(f"max_subsets must be >= 1, got {max_subsets}")
+        if window < 2:
+            raise ValueError(f"window must be >= 2, got {window}")
 
         self.hand_encoder = hand_encoder  # NOT an nn.Module (frozen, TF-backed)
         self.output_dim = output_dim
         self.max_subsets = max_subsets
+        self.window = window
+        self.debug = debug
+        self._debug_calls_board = 0
+        self._debug_calls_made_hand = 0
 
         embed_dim = hand_encoder.embedding_dim
 
-        # Learned attention scorer over subset embeddings: one scalar
-        # score per subset, softmax-normalised, weighted sum — the
-        # trainable "which decomposition best represents this board"
-        # step. Mirrors BoardEncoder's own use of a small learned
-        # module (there, a Transformer layer) on top of a frozen/shared
-        # per-card representation.
         self.attn_scorer = nn.Sequential(
             nn.Linear(embed_dim, attn_hidden_dim),
             nn.Tanh(),
@@ -238,53 +232,34 @@ class CompositeBoardEncoder(nn.Module):
         else:
             self.project = nn.Linear(embed_dim, output_dim)
 
-        # N == 0 (preflop / no board dealt yet): dedicated learned
-        # placeholder, same pattern as BoardEncoder.empty_board_embed.
+        # N == 0 (board-texture path): preflop / no board dealt.
         self.empty_board_embed = nn.Parameter(torch.zeros(output_dim))
         nn.init.normal_(self.empty_board_embed, std=0.02)
 
-        # N == 1 (a lone dealt node — no native subset size fits one
-        # card): dedicated small embedding table over the 52 possible
-        # cards, NOT the pretrained encoder (which has never seen a
-        # single-card grid and has no factorization guarantee at that
-        # size). Rare case in practice; doesn't need to be
-        # sophisticated, just needs to exist and be trainable.
+        # N == 1 (board-texture path): lone dealt node.
         self.single_card_embed = nn.Embedding(52, output_dim)
 
+        # No legal 5-card split yet (made-hand path) — e.g. any street
+        # before enough hole+board cards exist, or Omaha before the
+        # flop. Distinct from empty_board_embed: this fires even when
+        # hole cards ARE known, just not enough board (or vice versa).
+        self.no_valid_hand_embed = nn.Parameter(torch.zeros(output_dim))
+        nn.init.normal_(self.no_valid_hand_embed, std=0.02)
+
     # ------------------------------------------------------------------
-    # Forward (single example)
+    # Board-texture role (single list) — forward / forward_batch
     # ------------------------------------------------------------------
 
     def forward(self, card_ids: Optional[Sequence[int]]) -> torch.Tensor:
         """Embed a single board. Returns shape (output_dim,)."""
         return self.forward_batch([card_ids])[0]
 
-    # ------------------------------------------------------------------
-    # Forward (batch)
-    # ------------------------------------------------------------------
-
     def forward_batch(
         self, batch_card_ids: Sequence[Optional[Sequence[int]]]
     ) -> torch.Tensor:
         """
-        Embed a batch of boards, each of potentially different size —
-        exactly the RepresentationModel.forward_batch() calling
-        convention (see representation_model.py's own board-count
-        handling for how per-example board LISTS are already grouped
-        before reaching here; this method still handles per-example
-        SIZE variation within one board index, e.g. mixed preflop/flop/
-        turn/river examples in one training batch).
-
-        Parameters
-        ----------
-        batch_card_ids : Sequence[Optional[Sequence[int]]]
-            One board's dealt card ids per example. Empty/None = no
-            board dealt yet for that example.
-
-        Returns
-        -------
-        torch.Tensor
-            Shape (batch, output_dim).
+        Embed a batch of boards (or any single card-set list), each of
+        potentially different size, decomposed via self.window.
         """
         batch_size = len(batch_card_ids)
         if batch_size == 0:
@@ -292,11 +267,9 @@ class CompositeBoardEncoder(nn.Module):
 
         device = self.empty_board_embed.device
 
-        # --- classify each example -----------------------------------
         empty_idx: List[int] = []
         single_idx: List[int] = []
         decomposed_idx: List[int] = []
-        # Per decomposed example: list of (subset card-id tuples)
         subsets_per_example: List[List[Tuple[int, ...]]] = [None] * batch_size  # type: ignore[list-item]
 
         for i, cards in enumerate(batch_card_ids):
@@ -306,7 +279,7 @@ class CompositeBoardEncoder(nn.Module):
             elif n == 1:
                 single_idx.append(i)
             else:
-                idx_tuples = _decompose_indices(n, self.max_subsets)
+                idx_tuples = _decompose_indices(n, self.max_subsets, self.window)
                 subsets_per_example[i] = [
                     tuple(cards[p] for p in idxs) for idxs in idx_tuples
                 ]
@@ -314,11 +287,9 @@ class CompositeBoardEncoder(nn.Module):
 
         out = torch.zeros(batch_size, self.output_dim, device=device)
 
-        # --- N == 0: learned placeholder -------------------------------
         if empty_idx:
             out[empty_idx] = self.empty_board_embed
 
-        # --- N == 1: small embedding table -----------------------------
         if single_idx:
             card_ids_t = torch.tensor(
                 [batch_card_ids[i][0] for i in single_idx],
@@ -326,47 +297,158 @@ class CompositeBoardEncoder(nn.Module):
             )
             out[single_idx] = self.single_card_embed(card_ids_t)
 
-        # --- N >= 2: decompose, ONE batched pretrained-encoder call,
-        #     then learned attention-pool per example -------------------
         if decomposed_idx:
-            flat_subsets: List[Tuple[int, ...]] = []
-            counts: List[int] = []
-            for i in decomposed_idx:
-                subs = subsets_per_example[i]
-                counts.append(len(subs))
-                flat_subsets.extend(subs)
-
-            # Single batched TF dispatch for every subset of every
-            # decomposed example in this call — the throughput property
-            # this whole module exists to preserve (see module
-            # docstring's step 2).
-            flat_np = self.hand_encoder.encode_batch(
-                [list(s) for s in flat_subsets]
-            )  # (total_subsets, embed_dim)
-            flat_embed = torch.from_numpy(flat_np).float().to(device).detach()
-
-            max_subsets_in_batch = max(counts)
-            embed_dim = flat_embed.shape[-1]
-            padded = torch.zeros(
-                len(decomposed_idx), max_subsets_in_batch, embed_dim, device=device
+            pooled = self._encode_and_pool(
+                [subsets_per_example[i] for i in decomposed_idx], device
             )
-            pad_mask = torch.ones(
-                len(decomposed_idx), max_subsets_in_batch, dtype=torch.bool, device=device
-            )  # True = padding (ignore)
-
-            cursor = 0
-            for row, count in enumerate(counts):
-                padded[row, :count] = flat_embed[cursor: cursor + count]
-                pad_mask[row, :count] = False
-                cursor += count
-
-            # Learned attention pooling over the (padded) subset axis.
-            scores = self.attn_scorer(padded).squeeze(-1)          # (rows, max_subsets)
-            scores = scores.masked_fill(pad_mask, float("-inf"))
-            weights = torch.softmax(scores, dim=-1)                 # (rows, max_subsets)
-            pooled = (weights.unsqueeze(-1) * padded).sum(dim=1)    # (rows, embed_dim)
-
-            projected = self.project(pooled)                        # (rows, output_dim)
+            projected = self.project(pooled)
             out[decomposed_idx] = projected
+            self._maybe_debug_log("board", pooled, projected)
 
-        return out 
+        return out
+
+    # ------------------------------------------------------------------
+    # Made-hand role (hole + board, constraint-aware)
+    # ------------------------------------------------------------------
+
+    def forward_made_hand(
+        self,
+        hole_card_ids: Sequence[int],
+        board_card_ids: Sequence[int],
+        showdown_type: int,
+    ) -> torch.Tensor:
+        """Embed one made hand. Returns shape (output_dim,)."""
+        return self.forward_batch_made_hand(
+            [hole_card_ids], [board_card_ids], [showdown_type]
+        )[0]
+
+    def forward_batch_made_hand(
+        self,
+        batch_hole_card_ids: Sequence[Sequence[int]],
+        batch_board_card_ids: Sequence[Sequence[int]],
+        batch_showdown_types: Sequence[int],
+    ) -> torch.Tensor:
+        """
+        Embed a batch of (hole, board) pairs as pooled 5-card
+        candidate-made-hand embeddings, per each example's showdown_type
+        constraint (representation/showdown_constraints.py).
+
+        Parameters
+        ----------
+        batch_hole_card_ids, batch_board_card_ids : Sequence[Sequence[int]]
+            Same length, one entry per example.
+        batch_showdown_types : Sequence[int]
+            Same length — showdown_type int per example (matches
+            poker_eval.ShowdownType / point_encoder.py's vocabulary).
+
+        Returns
+        -------
+        torch.Tensor
+            Shape (batch, output_dim). Examples with no legal 5-card
+            split yet (see _decompose_made_hand_indices) get
+            self.no_valid_hand_embed.
+        """
+        batch_size = len(batch_hole_card_ids)
+        if batch_size == 0:
+            raise ValueError("batch_hole_card_ids must be non-empty")
+        if not (len(batch_board_card_ids) == len(batch_showdown_types) == batch_size):
+            raise ValueError(
+                f"batch_hole_card_ids ({batch_size}), batch_board_card_ids "
+                f"({len(batch_board_card_ids)}), and batch_showdown_types "
+                f"({len(batch_showdown_types)}) must all have the same length"
+            )
+
+        device = self.no_valid_hand_embed.device
+
+        none_idx: List[int] = []
+        decomposed_idx: List[int] = []
+        subsets_per_example: List[List[Tuple[int, ...]]] = [None] * batch_size  # type: ignore[list-item]
+
+        for i in range(batch_size):
+            hole = batch_hole_card_ids[i] or []
+            board = batch_board_card_ids[i] or []
+            constraint = get_constraint(batch_showdown_types[i])
+            idx_pairs = _decompose_made_hand_indices(
+                len(hole), len(board), constraint, self.max_subsets
+            )
+            if not idx_pairs:
+                none_idx.append(i)
+                continue
+            subsets_per_example[i] = [
+                tuple(hole[p] for p in hc) + tuple(board[p] for p in bc)
+                for hc, bc in idx_pairs
+            ]
+            decomposed_idx.append(i)
+
+        out = torch.zeros(batch_size, self.output_dim, device=device)
+
+        if none_idx:
+            out[none_idx] = self.no_valid_hand_embed
+
+        if decomposed_idx:
+            pooled = self._encode_and_pool(
+                [subsets_per_example[i] for i in decomposed_idx], device
+            )
+            projected = self.project(pooled)
+            out[decomposed_idx] = projected
+            self._maybe_debug_log("made_hand", pooled, projected)
+
+        return out
+
+    # ------------------------------------------------------------------
+    # Shared: batched frozen-encoder call + learned attention pool
+    # ------------------------------------------------------------------
+
+    def _encode_and_pool(
+        self, subsets_per_example: List[List[Tuple[int, ...]]], device
+    ) -> torch.Tensor:
+        """
+        One batched hand_encoder.encode_batch() call across every
+        subset of every example in subsets_per_example, then per-example
+        learned-attention pooling. Shared by both forward_batch() and
+        forward_batch_made_hand() — identical mechanics, only how the
+        subsets were built differs upstream.
+        """
+        flat_subsets: List[Tuple[int, ...]] = []
+        counts: List[int] = []
+        for subs in subsets_per_example:
+            counts.append(len(subs))
+            flat_subsets.extend(subs)
+
+        flat_np = self.hand_encoder.encode_batch([list(s) for s in flat_subsets])
+        flat_embed = torch.from_numpy(flat_np).float().to(device).detach()
+
+        max_subsets_in_batch = max(counts)
+        embed_dim = flat_embed.shape[-1]
+        rows = len(subsets_per_example)
+        padded = torch.zeros(rows, max_subsets_in_batch, embed_dim, device=device)
+        pad_mask = torch.ones(rows, max_subsets_in_batch, dtype=torch.bool, device=device)
+
+        cursor = 0
+        for row, count in enumerate(counts):
+            padded[row, :count] = flat_embed[cursor: cursor + count]
+            pad_mask[row, :count] = False
+            cursor += count
+
+        scores = self.attn_scorer(padded).squeeze(-1)
+        scores = scores.masked_fill(pad_mask, float("-inf"))
+        weights = torch.softmax(scores, dim=-1)
+        pooled = (weights.unsqueeze(-1) * padded).sum(dim=1)  # (rows, embed_dim)
+        return pooled
+
+    def _maybe_debug_log(self, role: str, pooled: torch.Tensor, projected: torch.Tensor) -> None:
+        counter_attr = f"_debug_calls_{role}"
+        calls = getattr(self, counter_attr)
+        if not self.debug or calls >= 3:
+            return
+        setattr(self, counter_attr, calls + 1)
+        with torch.no_grad():
+            pre_std = pooled.std(dim=0).mean().item()
+            post_std = projected.std(dim=0).mean().item()
+        msg = (
+            f"[CompositeBoardEncoder:{role}] debug ({calls + 1}/3): "
+            f"n_examples={pooled.shape[0]}, window={self.window}, "
+            f"pre_project_std={pre_std:.6f}, post_project_std={post_std:.6f}"
+        )
+        logger.info(msg)
+        print(msg, file=sys.stderr)

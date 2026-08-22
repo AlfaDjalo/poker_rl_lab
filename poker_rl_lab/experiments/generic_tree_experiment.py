@@ -90,6 +90,11 @@ Dependencies
 from __future__ import annotations
 
 import sys
+import logging
+import warnings
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 try:
     import poker_rl_lab.poker_eval as poker_eval # noqa: F401  (prefer the real extension if present)
@@ -122,8 +127,12 @@ from poker_rl_lab.trainers.generic_tree_training_loop import (
     GenericTreeTrainingLoop,
 )
 
-# _DEFAULT_ENCODER_PATH = "poker_rl_lab/poker_rl_lab/encoders/encoder_model.keras"
-_DEFAULT_ENCODER_PATH = "poker_rl_lab/encoders/encoder_model.keras"
+# _DEFAULT_ENCODER_PATH = "poker_rl_lab/encoders/encoder_model.keras"
+# _DEFAULT_ENCODER_EMBEDDING_DIM = 32
+
+_DEFAULT_ENCODER_PATH = (
+    Path(__file__).resolve().parent.parent / "encoders" / "encoder_model.keras"
+)
 _DEFAULT_ENCODER_EMBEDDING_DIM = 32
 
 # ---------------------------------------------------------------------------
@@ -504,35 +513,49 @@ def _default_hand_encoder() -> BaseHandEncoder:
         HandEncoderArchitectureMismatch,
         PretrainedHandEncoder,
     )
+    resolved_path = str(_DEFAULT_ENCODER_PATH)
 
     try:
         encoder = PretrainedHandEncoder.from_file(
-            _DEFAULT_ENCODER_PATH,
+            resolved_path,
             expected_embedding_dim=_DEFAULT_ENCODER_EMBEDDING_DIM,
         )
-        print(
-            f"[generic_tree_experiment] Loaded pretrained hand encoder from "
-            f"{_DEFAULT_ENCODER_PATH} (embedding_dim={encoder.embedding_dim}).",
-            file=sys.stderr,
+        assert encoder.is_pretrained  # from_file() always sets this True
+        msg = (
+            f"[generic_tree_experiment] Loaded PRETRAINED hand encoder from "
+            f"{resolved_path} (embedding_dim={encoder.embedding_dim}, "
+            f"is_pretrained={encoder.is_pretrained}). This encoder is shared "
+            f"by both the hole-card and board CompositeEncoders."
         )
+        print(msg, file=sys.stderr)
+        logger.info(msg)
         return encoder
+
     except FileNotFoundError:
-        print(
-            f"[generic_tree_experiment] WARNING: encoder file not found at "
-            f"{_DEFAULT_ENCODER_PATH!r} — falling back to an UNTRAINED hand "
-            f"encoder (no poker knowledge). Pass "
-            f"hand_encoder=PretrainedHandEncoder.from_file(...) explicitly "
-            f"to use real weights from a different path.",
-            file=sys.stderr,
+        msg = (
+            f"[generic_tree_experiment] hand encoder file NOT FOUND at "
+            f"{resolved_path!r} — falling back to an UNTRAINED hand encoder "
+            f"(is_pretrained=False, NO poker knowledge). This affects BOTH "
+            f"the hole-card encoder AND the board encoder, since "
+            f"build_actor_critic() shares one hand_encoder instance between "
+            f"them. Pass hand_encoder=PretrainedHandEncoder.from_file(...) "
+            f"explicitly with the correct path to use real weights."
         )
+        warnings.warn(msg, RuntimeWarning, stacklevel=2)
+        logger.warning(msg)
+        print(f"WARNING: {msg}", file=sys.stderr)
         return PretrainedHandEncoder.untrained()
+    
     except HandEncoderArchitectureMismatch as exc:
-        print(
-            f"[generic_tree_experiment] WARNING: {_DEFAULT_ENCODER_PATH!r} "
-            f"failed architecture validation ({exc}) — falling back to an "
-            f"UNTRAINED hand encoder.",
-            file=sys.stderr,
+        msg = (
+            f"[generic_tree_experiment] {resolved_path!r} FAILED architecture "
+            f"validation ({exc}) — falling back to an UNTRAINED hand encoder "
+            f"(is_pretrained=False). Affects both hole-card and board "
+            f"encoders — see above."
         )
+        warnings.warn(msg, RuntimeWarning, stacklevel=2)
+        logger.warning(msg)
+        print(f"WARNING: {msg}", file=sys.stderr)
         return PretrainedHandEncoder.untrained()
     
 

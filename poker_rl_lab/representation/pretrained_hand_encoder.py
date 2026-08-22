@@ -119,8 +119,9 @@ class PretrainedHandEncoder(BaseHandEncoder):
         The (ideally pretrained) shared encoder.
     """
 
-    def __init__(self, model: CardStateEncoder) -> None:
+    def __init__(self, model: CardStateEncoder, is_pretrained: bool = False) -> None:
         self._model = model
+        self.is_pretrained = is_pretrained
 
     # ------------------------------------------------------------------
     # Construction
@@ -182,7 +183,7 @@ class PretrainedHandEncoder(BaseHandEncoder):
             model.card_set_encoder = inner
             model._encoder_config = getattr(inner, "encoder_input_shape", None)
 
-        instance = cls(model)
+        instance = cls(model, is_pretrained=True)
         if not skip_validation:
             instance._validate_fingerprint(expected_embedding_dim, expected_input_shape)
         return instance
@@ -197,7 +198,7 @@ class PretrainedHandEncoder(BaseHandEncoder):
         """
         config = {"encoder_input_shape": input_shape, "embedding_dim": embedding_dim}
         model = CardStateEncoder(config)
-        return cls(model)
+        return cls(model, is_pretrained=False)
 
     # ------------------------------------------------------------------
     # Public encoding API
@@ -222,22 +223,49 @@ class PretrainedHandEncoder(BaseHandEncoder):
     def encode_batch(self, card_id_lists: Sequence[Sequence[int]]) -> np.ndarray:
         """
         Embed a batch of card sets in one forward pass.
-
-        Parameters
-        ----------
-        card_id_lists : Sequence[Sequence[int]]
-            One card-id list per example (mix of hole/board/combined is
-            fine — grid construction doesn't care what the cards "mean").
-
-        Returns
-        -------
-        np.ndarray
-            Shape (batch, embedding_dim).
+        ...
         """
+        n = len(card_id_lists)
         grids = np.stack([card_ids_to_grid(ids) for ids in card_id_lists], axis=0)
+
+        # Pad the batch dimension up to the next power-of-two "bucket" so
+        # repeated calls with slightly different batch sizes (extremely
+        # common here — made-hand decomposition produces a different total
+        # flattened subset count on almost every minibatch) reuse the SAME
+        # traced tf.function graph instead of retracing on every call.
+        # Retracing this conv/dense stack on CPU is slow enough that
+        # constant retracing manifests as an apparent hang during PPO
+        # updates. Padding with zero-grids (no cards set) is safe: the
+        # padded rows' outputs are simply discarded below.
+        padded_n = max(1, 1 << (n - 1).bit_length())  # next power of 2 >= n
+        if padded_n != n:
+            pad = np.zeros((padded_n - n,) + grids.shape[1:], dtype=grids.dtype)
+            grids = np.concatenate([grids, pad], axis=0)
+
         out = self._model(tf.constant(grids), training=False)
         embedded = out[0] if isinstance(out, (list, tuple)) else out
-        return embedded.numpy()
+        embedded = embedded.numpy()
+        return embedded[:n]
+
+    # def encode_batch(self, card_id_lists: Sequence[Sequence[int]]) -> np.ndarray:
+    #     """
+    #     Embed a batch of card sets in one forward pass.
+
+    #     Parameters
+    #     ----------
+    #     card_id_lists : Sequence[Sequence[int]]
+    #         One card-id list per example (mix of hole/board/combined is
+    #         fine — grid construction doesn't care what the cards "mean").
+
+    #     Returns
+    #     -------
+    #     np.ndarray
+    #         Shape (batch, embedding_dim).
+    #     """
+    #     grids = np.stack([card_ids_to_grid(ids) for ids in card_id_lists], axis=0)
+    #     out = self._model(tf.constant(grids), training=False)
+    #     embedded = out[0] if isinstance(out, (list, tuple)) else out
+    #     return embedded.numpy()
 
     @property
     def embedding_dim(self) -> int:
