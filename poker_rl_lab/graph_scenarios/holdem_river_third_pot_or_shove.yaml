@@ -1,0 +1,28 @@
+name: holdem_river_third_pot_or_shove
+description: >
+  Heads-up river, two bet sizes for each player: 1/3 pot and all-in
+  (~1.5x the starting pot, given 100 behind on a 100 pot — same
+  ante-funded stack depth as river_bet_or_check.yaml). Reuses that
+  engine variant unchanged; only the sizing menu differs.
+
+engine_variant: holdem_river_bet_or_check
+num_seats: 2
+
+stack:
+  mode: fixed_bb
+  stack_bb: 75.0
+  big_blind_size: 2
+  small_blind_size: 1
+  fixed_dealer_position: 1   # seat 1 = OOP (first to act), seat 0 = IP
+
+scope:
+  domains: [BETTING]
+  node_ids: [bet_river]
+
+action_abstraction:
+  BETTING:
+    # 0.3333 * pot(100) = 33 on an OPENING bet/check. include_all_in
+    # covers the full-stack shove (100) — see the caveat below for why
+    # a second literal "1.5" fraction entry isn't listed.
+    bet_fractions: [0.3333]
+    include_all_in: true

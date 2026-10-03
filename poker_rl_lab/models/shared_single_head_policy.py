@@ -124,3 +124,7 @@ class SharedSingleHeadActorCritic(DualSeatActorCritic):
     def seat_parameters(self, seat: int) -> Iterator[nn.Parameter]:
         _check_seat(seat)
         return self.parameters()
+
+    def action_probabilities(self, seat, obs, legal_mask):
+        _check_seat(seat)
+        return self.actor_critic.action_probabilities(obs, legal_mask)

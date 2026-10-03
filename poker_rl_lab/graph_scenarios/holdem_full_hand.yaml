@@ -1,0 +1,29 @@
+name: holdem_full_hand
+description: >
+  Full heads-up hold'em: preflop, flop, turn, and river all have a real
+  betting round, with real re-raises (no cap — unlike the old
+  DuoGameConfig-based holdem_full_duo.yaml, which could only express one
+  bet + one call/fold per street). Every BETTING decision the compiled
+  poker_engine/games/holdem.yaml graph produces is in scope, for BOTH
+  seats — self-play, one shared policy (see
+  scenarios/graph_scenario_config.py's module docstring).
+
+engine_variant: holdem
+num_seats: 2
+
+stack:
+  mode: fixed_bb
+  stack_bb: 100.0
+  big_blind_size: 2
+  small_blind_size: 1
+  fixed_dealer_position: 1
+  
+scope:
+  domains: [BETTING]
+  # node_ids omitted: every BETTING node in holdem.yaml's compiled
+  # graph (bet_preflop/bet_flop/bet_turn/bet_river) is in scope.
+
+action_abstraction:
+  BETTING:
+    bet_fractions: [0.33, 0.5, 0.75, 1.0, 1.5]
+    include_all_in: true

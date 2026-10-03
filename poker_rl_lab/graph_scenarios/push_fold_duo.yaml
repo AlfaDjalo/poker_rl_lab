@@ -1,0 +1,64 @@
+name: push_fold_duo
+description: >
+  Heads-up preflop push-fold, graph-native. Trains the single BETTING
+  decision at push_fold.yaml's `bet_preflop` node (AllInOrFoldRules —
+  FOLD, or CALL/shove-as-full-stack only, never an intermediate size).
+  Both seats trained via self-play under one shared policy (see
+  envs/graph_scenario_env.py's module docstring) — there is no
+  hardcoded SB/BB split at the scenario-config level; which seat is
+  which shows up to the network purely through PositionFeatures
+  (is_small_blind/is_big_blind), same as every other graph scenario.
+
+engine_variant: push_fold
+num_seats: 2
+
+stack:
+  mode: randomized_bb
+  min_stack_bb: 4.0
+  max_stack_bb: 20.0
+  big_blind_size: 2
+  small_blind_size: 1
+  # A heads-up push-fold scenario gets no positional-generalization
+  # benefit from rotating the dealer every hand (there are only two
+  # positions, and the network already sees is_small_blind/
+  # is_big_blind explicitly regardless of physical seat) -- rotating
+  # anyway only adds noise the network must learn to filter out before
+  # it can start differentiating by hand strength at all, which the
+  # old, pre-graph pipeline never had to deal with (SB was a literal,
+  # permanently-fixed seat there -- see
+  # scenarios/push_fold_duo_generator.py / scenarios/duo_game_config.py's
+  # dealer_seat). Fixing it at 1 makes seat 0 the small blind and first
+  # to act every hand (matches graph_engine.py's handle_post_blinds /
+  # handle_set_first_to_act for dealer_position=1, n=2 -- see
+  # envs/graph_scenario_env.py's own note on this) and matches
+  # push_fold_duo_hand_grids.py's own hardcoded _DEALER_POSITION.
+  fixed_dealer_position: 1
+
+scope:
+  domains: [BETTING]
+  # Restricted to exactly the one decision this scenario trains --
+  # push_fold.yaml's betting step id is bet_preflop, which compiles
+  # to a DECISION node of that same id (see flow_loader.py: a
+  # `betting` step's own id names its DECISION node; only its
+  # set_first_to_act prelude gets a separate __first_to_act id).
+  # Nothing else in the compiled graph (deal_flop/deal_turn/deal_river/
+  # showdown) is a DECISION node at all, so this list is belt-and-
+  # braces, not strictly required to exclude anything -- but it keeps
+  # the scenario's coverage claim explicit and self-documenting, and
+  # validate_against_graph() will catch it immediately if a future
+  # edit to push_fold.yaml ever renames or adds a betting step.
+  node_ids: [bet_preflop]
+
+action_abstraction:
+  BETTING:
+    # AllInOrFoldRules never offers a genuine sizing RANGE (see
+    # betting.py's BettingResolver.build_request: BettingOption's
+    # min_amount == max_amount for every push-fold action), so
+    # bet_fractions is never actually consulted by
+    # GraphScenarioEnv._betting_options for this scenario -- every
+    # option it sees already has min==max and is passed straight
+    # through as its own resolved action. Left empty for clarity;
+    # include_all_in stays true to satisfy BettingAbstraction's own
+    # "at least one of bet_fractions/include_all_in" validation.
+    bet_fractions: []
+    include_all_in: true

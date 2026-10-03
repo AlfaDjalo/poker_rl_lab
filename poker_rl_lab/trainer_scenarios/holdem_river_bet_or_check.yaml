@@ -1,0 +1,13 @@
+label: "Hold'em River: Bet or Check"
+description: "Heads-up Hold'em river decision using the graph-backed Trainer flow."
+engine_variant: holdem
+rl_game_name: holdem
+betting_type: no_limit
+stack_bb: {min: 50.0, max: 50.0}
+policy:
+  checkpoint_path: "ckpt_holdem_river_bet_or_check.pt"
+  variant: shared_trunk_two_heads
+  allow_untrained_fallback: true
+evaluator:
+  type: rl_policy_frequency
+  params: {}

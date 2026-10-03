@@ -35,6 +35,27 @@ but built on engine card ids (0-51) via card_utils instead of card
 strings ("As", "Kd", ...), so it slots into the rest of this codebase
 without a string-conversion round trip.
 
+PERFORMANCE CHANGES IN THIS VERSION (from profiling)
+-----------------------------------------------------
+Profiling (profiling/profile_training.py) showed encode_batch() was the
+dominant cost: ~67% of full hold'em wall time, at ~12-25 ms per call
+regardless of batch size (eager Keras __call__ overhead), while 92% of
+the rows encoded were card sets already seen earlier in the run.
+
+Two fixes, both preserving the BaseHandEncoder contract exactly:
+
+  1. Result cache keyed by card-set bitmask. The encoder is frozen
+     (every caller .detach()es its output), so the embedding is a pure
+     function of the card SET (order/duplicates are ignored by
+     card_ids_to_grid already). Only unseen sets reach TensorFlow.
+  2. A single @tf.function with an unspecified batch dimension replaces
+     the eager Keras call + power-of-two padding. One traced graph
+     serves every batch size: no retracing, no padding waste, far lower
+     per-call overhead.
+
+The cache is only valid while the Keras weights are frozen. If the
+underlying model is ever fine-tuned/changed, call clear_cache().
+
 IMPORTANT — framework boundary
 -------------------------------
 This wrapper is TensorFlow/Keras, NOT PyTorch. card_encoder.py (the
@@ -104,6 +125,20 @@ def get_custom_objects() -> dict:
     }
 
 
+def _cards_key(card_ids: Iterable[int]) -> int:
+    """
+    Order- and duplicate-insensitive cache key for a card set.
+
+    Matches card_ids_to_grid's semantics (duplicates silently ignored,
+    order irrelevant), so two inputs share a key iff they produce
+    identical grids.
+    """
+    key = 0
+    for c in card_ids:
+        key |= 1 << c
+    return key
+
+
 class PretrainedHandEncoder(BaseHandEncoder):
     """
     Produces embeddings for 2-card, 3-card, and 5-card composite card sets
@@ -117,11 +152,42 @@ class PretrainedHandEncoder(BaseHandEncoder):
     ----------
     model : CardStateEncoder
         The (ideally pretrained) shared encoder.
+    is_pretrained : bool
+        Whether `model` carries real pretrained weights.
+    max_cache_entries : int
+        Cap on cached card-set embeddings (default 1M, roughly 300-500 MB
+        with Python object overhead at embedding_dim 32). When exceeded, the cache is cleared.
     """
 
-    def __init__(self, model: CardStateEncoder, is_pretrained: bool = False) -> None:
+    def __init__(
+        self,
+        model: CardStateEncoder,
+        is_pretrained: bool = False,
+        max_cache_entries: int = 1_000_000,
+    ) -> None:
         self._model = model
         self.is_pretrained = is_pretrained
+
+        # Frozen encoder => output is a pure function of the card set.
+        self._cache: dict = {}
+        self._max_cache_entries = max_cache_entries
+        self.cache_hits = 0
+        self.cache_misses = 0
+
+        # One compiled graph for ANY batch size: no per-shape retracing
+        # and no eager Keras __call__ overhead (the ~12 ms/call floor
+        # seen in profiling).
+        @tf.function(
+            input_signature=[
+                tf.TensorSpec(shape=(None,) + tuple(GRID_SHAPE), dtype=tf.float32)
+            ],
+            reduce_retracing=True,
+        )
+        def _forward(x):
+            out = self._model(x, training=False)
+            return out[0] if isinstance(out, (list, tuple)) else out
+
+        self._forward = _forward
 
     # ------------------------------------------------------------------
     # Construction
@@ -222,50 +288,67 @@ class PretrainedHandEncoder(BaseHandEncoder):
 
     def encode_batch(self, card_id_lists: Sequence[Sequence[int]]) -> np.ndarray:
         """
-        Embed a batch of card sets in one forward pass.
-        ...
+        Embed a batch of card sets.
+
+        Results are cached by card-set bitmask (see module docstring);
+        only unseen sets reach TensorFlow, all in ONE compiled call.
+
+        Parameters
+        ----------
+        card_id_lists : Sequence[Sequence[int]]
+            One card-id list per example (mix of hole/board/combined is
+            fine — grid construction doesn't care what the cards "mean").
+
+        Returns
+        -------
+        np.ndarray
+            Shape (batch, embedding_dim). Always a fresh array, so
+            callers may mutate it freely without corrupting the cache.
         """
-        n = len(card_id_lists)
-        grids = np.stack([card_ids_to_grid(ids) for ids in card_id_lists], axis=0)
+        keys = [_cards_key(ids) for ids in card_id_lists]
 
-        # Pad the batch dimension up to the next power-of-two "bucket" so
-        # repeated calls with slightly different batch sizes (extremely
-        # common here — made-hand decomposition produces a different total
-        # flattened subset count on almost every minibatch) reuse the SAME
-        # traced tf.function graph instead of retracing on every call.
-        # Retracing this conv/dense stack on CPU is slow enough that
-        # constant retracing manifests as an apparent hang during PPO
-        # updates. Padding with zero-grids (no cards set) is safe: the
-        # padded rows' outputs are simply discarded below.
-        padded_n = max(1, 1 << (n - 1).bit_length())  # next power of 2 >= n
-        if padded_n != n:
-            pad = np.zeros((padded_n - n,) + grids.shape[1:], dtype=grids.dtype)
-            grids = np.concatenate([grids, pad], axis=0)
+        # Resolve every row into a LOCAL dict first, so eviction below can
+        # never invalidate keys this call still needs.
+        rows: dict = {}
+        misses: dict = {}
+        cache_get = self._cache.get
+        for key, ids in zip(keys, card_id_lists):
+            if key in rows or key in misses:
+                continue
+            row = cache_get(key)
+            if row is not None:
+                rows[key] = row
+            else:
+                misses[key] = ids
 
-        out = self._model(tf.constant(grids), training=False)
-        embedded = out[0] if isinstance(out, (list, tuple)) else out
-        embedded = embedded.numpy()
-        return embedded[:n]
+        self.cache_hits += len(keys) - len(misses)
+        self.cache_misses += len(misses)
 
-    # def encode_batch(self, card_id_lists: Sequence[Sequence[int]]) -> np.ndarray:
-    #     """
-    #     Embed a batch of card sets in one forward pass.
+        if misses:
+            miss_keys = list(misses)
+            grids = np.stack([card_ids_to_grid(misses[k]) for k in miss_keys], axis=0)
+            emb = self._forward(tf.constant(grids)).numpy()
+            new_rows = {k: emb[i].copy() for i, k in enumerate(miss_keys)}
+            rows.update(new_rows)
 
-    #     Parameters
-    #     ----------
-    #     card_id_lists : Sequence[Sequence[int]]
-    #         One card-id list per example (mix of hole/board/combined is
-    #         fine — grid construction doesn't care what the cards "mean").
+            # Evict AFTER the output rows are safely held in `rows`.
+            if len(self._cache) + len(new_rows) > self._max_cache_entries:
+                self._cache.clear()
+            self._cache.update(new_rows)
 
-    #     Returns
-    #     -------
-    #     np.ndarray
-    #         Shape (batch, embedding_dim).
-    #     """
-    #     grids = np.stack([card_ids_to_grid(ids) for ids in card_id_lists], axis=0)
-    #     out = self._model(tf.constant(grids), training=False)
-    #     embedded = out[0] if isinstance(out, (list, tuple)) else out
-    #     return embedded.numpy()
+        return np.stack([rows[k] for k in keys], axis=0)
+
+    def clear_cache(self) -> None:
+        """Drop all cached embeddings and reset hit/miss counters. Call
+        this if the underlying Keras weights are ever changed/unfrozen."""
+        self._cache.clear()
+        self.cache_hits = 0
+        self.cache_misses = 0
+
+    @property
+    def cache_hit_rate(self) -> float:
+        total = self.cache_hits + self.cache_misses
+        return self.cache_hits / total if total else 0.0
 
     @property
     def embedding_dim(self) -> int:
@@ -369,10 +452,7 @@ class PretrainedHandEncoder(BaseHandEncoder):
     # ------------------------------------------------------------------
 
     def _encode_single(self, card_ids: Iterable[int]) -> np.ndarray:
-        grid = card_ids_to_grid(card_ids)[np.newaxis, ...]  # add batch dim
-        out = self._model(tf.constant(grid), training=False)
-        embedded = out[0] if isinstance(out, (list, tuple)) else out
-        return embedded.numpy()[0]
+        return self.encode_batch([list(card_ids)])[0]
 
 
 # ---------------------------------------------------------------------------
@@ -393,5 +473,8 @@ class PretrainedHandEncoder(BaseHandEncoder):
 #             PyTorch, and rewrite CardEncoder to match.
 #
 # Recommend Option A once the real .keras file is available and we can
-# inspect its actual architecture/weights.
+# inspect its actual architecture/weights. NOTE: with the result cache
+# above, the TF path is no longer on the hot path for a frozen encoder;
+# Option A only becomes worthwhile if the encoder is to be fine-tuned
+# or moved to GPU.
 # ---------------------------------------------------------------------------

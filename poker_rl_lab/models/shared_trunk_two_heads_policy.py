@@ -250,3 +250,11 @@ class SharedTrunkTwoHeadsActorCritic(DualSeatActorCritic):
         alternating-training implication of the trunk being shared."""
         head = self._head_for(seat)
         return itertools.chain(self.representation_model.parameters(), head.parameters())
+
+    def action_probabilities(self, seat, obs, legal_mask):
+        head = self._head_for(seat)
+        latent = self.representation_model(obs)
+        logits, _ = head(latent)
+        mask_t = torch.as_tensor(legal_mask, dtype=torch.bool, device=logits.device)
+        masked_logits = apply_legal_mask(logits, mask_t)
+        return torch.softmax(masked_logits, dim=-1)

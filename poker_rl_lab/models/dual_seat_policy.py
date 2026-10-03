@@ -164,3 +164,12 @@ class DualSeatActorCritic(nn.Module, ABC):
     @abstractmethod
     def seat_parameters(self, seat: int) -> Iterator[nn.Parameter]:
         ...
+
+    @abstractmethod
+    def action_probabilities(
+        self,
+        seat: int,
+        obs: RepresentationInput,
+        legal_mask: Sequence[bool],
+    ) -> torch.Tensor:
+        ...        

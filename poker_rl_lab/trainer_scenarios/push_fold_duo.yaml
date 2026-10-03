@@ -1,0 +1,27 @@
+label: "Push/Fold Heads-Up"
+description: "Heads-up push-fold trainer. Random effective stack, random position (SB or BB), random hand."
+engine_variant: push_fold
+rl_game_name: holdem
+betting_type: push_fold
+hero_seat: 0
+villain_seat: 1
+stack_bb: {min: 5.0, max: 20.0}
+villain_matches_hero_range: true
+small_blind: 1
+big_blind: 2
+positions: [SB, BB]
+policy:
+  checkpoint_path: "checkpoints/push_fold_duo/ckpt_push_fold.pt"
+  checkpoint_dir: "checkpoints/push_fold_duo"
+  variant: shared_trunk_two_heads
+  allow_untrained_fallback: true
+evaluator:
+  type: rl_policy_frequency
+  params: {}
+actions:
+  SB: ["fold", "all_in"]
+  BB: ["fold", "call"]
+action_map:
+  fold: fold
+  all_in: all_in
+  call: call

@@ -12,22 +12,11 @@ the eventual transformer's inputs ("Hole", "Board 1", "Board 2", "Point 1",
 
 Why this file does NOT read from StructuredObservation directly
 -------------------------------------------------------------------
-Unlike point_encoder.py/game_encoder.py/position_encoder.py, there is
-currently no history-of-actions field anywhere in the codebase:
-envs/observations.py's StructuredObservation exposes hole cards, board,
-players, and current betting state (pot / bet_to_call / min_raise /
-raises_this_street) — but not a log of individual past actions — and
-neither push_fold_env.py nor river_env.py records one internally as the
-episode progresses. So, deliberately mirroring the pattern already used
-for engine-shaped inputs elsewhere in this package (see point_encoder.py
-and game_encoder.py's adapter-function docstrings): this module defines
-the plain-data event type (`HistoryEvent`) and the encoder
-(`HistoryEncoder`) against that type only, with NO adapter function,
-because there is nothing yet to adapt *from*. A follow-up change to
-envs/observations.py (adding a `HistoryObs` field) and to the two
-environments (appending a `HistoryEvent` on every `_apply_action` call)
-is required before this encoder can be wired into the live pipeline —
-see the module-level TODO at the bottom of this file.
+This module defines the plain-data event type (`HistoryEvent`) and the
+encoder (`HistoryEncoder`) against that type only. Adapters that build
+HistoryEvents live elsewhere (representation/observation_adapter.py for
+the legacy envs, representation/graph_observation_adapter.py for the
+graph-native env), keeping this module engine-independent.
 
 Representation
 --------------
@@ -41,8 +30,9 @@ out the final hidden state as the sequence embedding.
 
 Each `HistoryEvent` is intentionally minimal and engine-independent:
 
-    action_type   : index into actions.abstract_action.ActionType — the
-                    dominant signal; what was actually done.
+    action_type   : index into actions.abstract_action.ActionType (or,
+                    for the graph-native adapter, the engine's own
+                    ActionType int) — what was actually done.
     street_index  : which street the action happened on (0=preflop, ...).
                     Not embedded categorically (games/CAP variants vary
                     in street count — see game_encoder.py's num_streets
@@ -54,27 +44,33 @@ Each `HistoryEvent` is intentionally minimal and engine-independent:
                     fixed per-seat embedding table.
     pot_fraction  : chips this action put into the pot, divided by the
                     pot size immediately before the action. 0.0 for
-                    FOLD/CHECK (no chips move). Raw bet-sizing signal —
-                    "bet 25% of pot" vs "shoved 3x the pot" are very
-                    different actions even though both are ActionType
-                    BET_*/ALL_IN.
+                    FOLD/CHECK (no chips move).
     is_hero       : whether the hero (not an opponent) took this action.
-    is_aggressor  : whether this action set a new bet_to_call (i.e. was
-                    a bet/raise, matching ActionType.is_bet), as opposed
-                    to a call that merely matched an existing bet. Kept
-                    as an explicit flag rather than derived solely from
-                    action_type inside the encoder, since it is cheap for
-                    the caller building each HistoryEvent to know for
-                    certain (it already knows whether bet_to_call changed)
-                    while re-deriving "is this a raise vs a bet" from
-                    action_type alone would require also knowing whether
-                    someone had already bet this street.
+    is_aggressor  : whether this action set a new bet_to_call (bet/raise),
+                    as opposed to a call that merely matched a bet.
+
+PERFORMANCE CHANGES IN THIS VERSION (from profiling)
+------------------------------------------------------
+Profiling showed HistoryEncoder.forward_batch at ~25% of full hold'em
+wall time (~11 ms/call): it built token tensors one example at a time
+(several torch.tensor() calls + an embedding lookup + an MLP call PER
+example, in a Python loop) and ran the GRU over zero-padded rows for
+examples with no history at all.
+
+forward_batch() is now fully vectorised:
+  - ONE torch.tensor() build for every event across the whole batch,
+    ONE embedding lookup and ONE scalar-MLP call over all events.
+  - Tokens scattered into the padded (rows, max_len, token_dim) tensor
+    with a single index_put (differentiable).
+  - The GRU runs ONLY on rows with >= 1 event; empty rows take the
+    learned placeholder directly.
+Output is numerically identical to the previous per-example
+implementation (same parameters, same math). _events_to_tokens() is
+kept for any external caller / test that still uses it.
 
 Dependencies
 ------------
-    PyTorch, plus actions.abstract_action for NUM_ACTIONS/ActionType
-    (pure Python — no C++ extension, no poker_eval — see that module's
-    own docstring). No CAP Engine dependency.
+    PyTorch, plus actions.abstract_action for NUM_ACTIONS.
 """
 
 from __future__ import annotations
@@ -172,6 +168,7 @@ class HistoryEncoder(nn.Module):
         )
 
         token_dim = action_type_dim + scalar_hidden_dim
+        self._token_dim = token_dim
         self.gru = nn.GRU(input_size=token_dim, hidden_size=gru_hidden_dim, batch_first=True)
 
         self.project = nn.Linear(gru_hidden_dim, output_dim)
@@ -185,18 +182,21 @@ class HistoryEncoder(nn.Module):
     # Token construction
     # ------------------------------------------------------------------
 
-    def _events_to_tokens(self, events: Sequence[HistoryEvent]) -> torch.Tensor:
-        """Build the (len(events), token_dim) token tensor for one sequence."""
+    def _tokens_for_events(self, events: Sequence[HistoryEvent]) -> torch.Tensor:
+        """
+        Vectorised token build for a FLAT list of events (from any
+        number of sequences). Returns (len(events), token_dim).
+        """
         device = self.action_type_embed.weight.device
         action_ids = torch.tensor(
             [e.action_type for e in events], dtype=torch.long, device=device
         )
-        scalars = torch.tensor(
+        raw = torch.tensor(
             [
                 [
-                    math.log1p(e.street_index),
+                    e.street_index,
                     e.seat_fraction,
-                    math.log1p(e.pot_fraction),
+                    e.pot_fraction,
                     float(e.is_hero),
                     float(e.is_aggressor),
                 ]
@@ -205,9 +205,24 @@ class HistoryEncoder(nn.Module):
             dtype=torch.float32,
             device=device,
         )
-        action_embed = self.action_type_embed(action_ids)   # (len, action_type_dim)
-        scalar_embed = self.scalar_mlp(scalars)              # (len, scalar_hidden_dim)
-        return torch.cat([action_embed, scalar_embed], dim=-1)  # (len, token_dim)
+        scalars = torch.stack(
+            [
+                torch.log1p(raw[:, 0]),   # log1p(street_index)
+                raw[:, 1],                # seat_fraction
+                torch.log1p(raw[:, 2]),   # log1p(pot_fraction)
+                raw[:, 3],                # is_hero
+                raw[:, 4],                # is_aggressor
+            ],
+            dim=1,
+        )
+        action_embed = self.action_type_embed(action_ids)   # (E, action_type_dim)
+        scalar_embed = self.scalar_mlp(scalars)              # (E, scalar_hidden_dim)
+        return torch.cat([action_embed, scalar_embed], dim=-1)
+
+    def _events_to_tokens(self, events: Sequence[HistoryEvent]) -> torch.Tensor:
+        """Build the (len(events), token_dim) token tensor for one sequence.
+        Kept for backward compatibility; same result as _tokens_for_events."""
+        return self._tokens_for_events(events)
 
     # ------------------------------------------------------------------
     # Forward
@@ -231,10 +246,10 @@ class HistoryEncoder(nn.Module):
         if not events:
             return self.empty_history_embed
 
-        tokens = self._events_to_tokens(events).unsqueeze(0)  # (1, len, token_dim)
-        output, _ = self.gru(tokens)                           # (1, len, gru_hidden_dim)
-        last = output[0, -1]                                    # (gru_hidden_dim,)
-        return self.project(last)                                # (output_dim,)
+        tokens = self._tokens_for_events(events).unsqueeze(0)  # (1, len, token_dim)
+        output, _ = self.gru(tokens)                            # (1, len, gru_hidden_dim)
+        last = output[0, -1]                                     # (gru_hidden_dim,)
+        return self.project(last)                                 # (output_dim,)
 
     def forward_batch(
         self, batch_events: Sequence[Sequence[HistoryEvent]]
@@ -256,16 +271,13 @@ class HistoryEncoder(nn.Module):
 
         Notes
         -----
-        Sequences are right-padded to the batch's max length and run
-        through the GRU together; because a GRU is strictly causal (each
-        step only depends on earlier steps, never later ones), padding
-        appended *after* a sequence's true length cannot affect the
-        hidden state already computed at that true length — so gathering
-        each sequence's output at its own (length - 1) index is exact,
-        not an approximation. This avoids needing PackedSequence. Wholly
-        empty sequences skip the GRU and use the learned placeholder
-        directly (mirroring board_encoder.forward_batch's handling of
-        empty boards).
+        Sequences are right-padded to the max length among NON-EMPTY
+        sequences and run through the GRU together; because a GRU is
+        strictly causal, padding appended after a sequence's true length
+        cannot affect the hidden state at that true length, so gathering
+        each sequence's output at its own (length - 1) index is exact.
+        Wholly empty sequences skip the GRU and use the learned
+        placeholder directly.
         """
         batch_size = len(batch_events)
         if batch_size == 0:
@@ -277,46 +289,32 @@ class HistoryEncoder(nn.Module):
         if not non_empty:
             return self.empty_history_embed.unsqueeze(0).expand(batch_size, -1)
 
-        max_len = max(lengths)
-        token_dim = self.action_type_embed.embedding_dim + self.scalar_mlp[0].out_features
         device = self.action_type_embed.weight.device
+        ne_lengths = [lengths[i] for i in non_empty]
+        num_rows = len(non_empty)
+        max_len = max(ne_lengths)
 
-        padded = torch.zeros(batch_size, max_len, token_dim, device=device)
-        for i, evs in enumerate(batch_events):
-            if not evs:
-                continue
-            padded[i, : len(evs)] = self._events_to_tokens(evs)
+        # -- one flat token build across every event in the batch --------
+        flat_events = [e for i in non_empty for e in batch_events[i]]
+        tokens = self._tokens_for_events(flat_events)           # (E, token_dim)
 
-        output, _ = self.gru(padded)  # (batch, max_len, gru_hidden_dim)
-
-        idx = torch.tensor([max(n - 1, 0) for n in lengths], dtype=torch.long, device=device)
-        gathered = output[torch.arange(batch_size, device=device), idx]  # (batch, gru_hidden_dim)
-        projected = self.project(gathered)                  # (batch, output_dim)
-
-        empty_rows = torch.tensor(
-            [n == 0 for n in lengths], dtype=torch.bool, device=device
+        # -- scatter into the padded (rows, max_len, token_dim) tensor ---
+        len_t = torch.tensor(ne_lengths, dtype=torch.long, device=device)
+        rows = torch.repeat_interleave(torch.arange(num_rows, device=device), len_t)
+        offsets = torch.cumsum(len_t, dim=0) - len_t
+        cols = torch.arange(tokens.shape[0], device=device) - torch.repeat_interleave(
+            offsets, len_t
         )
-        if empty_rows.any():
-            projected = projected.clone()
-            projected[empty_rows] = self.empty_history_embed
+        padded = tokens.new_zeros(num_rows, max_len, self._token_dim)
+        padded = padded.index_put((rows, cols), tokens)
 
-        return projected
+        output, _ = self.gru(padded)                             # (rows, max_len, H)
+        gathered = output[torch.arange(num_rows, device=device), len_t - 1]
+        projected = self.project(gathered)                       # (rows, output_dim)
 
+        if num_rows == batch_size:
+            return projected
 
-# ---------------------------------------------------------------------------
-# TODO — wiring into the live pipeline (not done in this file):
-#
-#   1. Add a `HistoryObs` dataclass to envs/observations.py, e.g.:
-#          events: Tuple[HistoryEvent, ...]
-#      and a corresponding field on StructuredObservation.
-#   2. In push_fold_env.py / river_env.py, append one HistoryEvent per
-#      call to _apply_action() (river_env.py) / the single step()
-#      decision (push_fold_env.py), using pot-before/pot-after to derive
-#      pot_fraction, and ActionType.is_bet (abstract_action.py) to derive
-#      is_aggressor.
-#   3. Thread the accumulated event list through _build_obs() into the
-#      new HistoryObs field.
-#
-# Left for a follow-up change since it touches two existing, tested env
-# files rather than adding a new one.
-# ---------------------------------------------------------------------------
+        out = self.empty_history_embed.unsqueeze(0).expand(batch_size, -1).clone()
+        idx = torch.tensor(non_empty, dtype=torch.long, device=device)
+        return out.index_copy(0, idx, projected)

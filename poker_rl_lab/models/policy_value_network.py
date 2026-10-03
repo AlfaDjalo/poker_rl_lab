@@ -386,3 +386,21 @@ class PokerActorCritic(nn.Module):
         entropy = dist.entropy()
 
         return log_probs, values, entropy
+
+    def action_probabilities(
+        self,
+        obs: RepresentationInput,
+        legal_mask: Sequence[bool],
+    ) -> torch.Tensor:
+        """
+        Full masked probability distribution over actions, no sampling —
+        for grading/display callers needing P(action) for every legal
+        action rather than one sampled choice. Same masked-softmax math
+        as act()'s internal Categorical; illegal entries are exactly 0.0.
+        Shape (action_dim,).
+        """
+        latent = self.representation_model(obs)
+        logits, _ = self.policy_value_network(latent)
+        mask_t = torch.as_tensor(legal_mask, dtype=torch.bool, device=logits.device)
+        masked_logits = apply_legal_mask(logits, mask_t)
+        return torch.softmax(masked_logits, dim=-1)

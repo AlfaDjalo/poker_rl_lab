@@ -149,17 +149,14 @@ def _compute_position_features(
 
     seat_fraction = ((seat - dealer) % n) / n
 
-    # Heads-up special case: the button posts the small blind. This
-    # matches scenarios/push_fold_generator.py's own convention (seat 0
-    # is documented as "dealer / small blind / shover" for n==2) — see
-    # the module docstring for a discrepancy this surfaced against
-    # GameState._post_blinds, which does not special-case n == 2.
-    if n == 2:
-        sb_seat = dealer
-        bb_seat = (dealer + 1) % n
-    else:
-        sb_seat = (dealer + 1) % n
-        bb_seat = (dealer + 2) % n
+    # Matches graph_engine.py's handle_post_blinds (_next_eligible_seats),
+    # which does NOT implement real poker's heads-up "button posts SB"
+    # exception -- for n==2 it assigns sb=(dealer+1)%n, bb=dealer, same
+    # formula as n>=3 (where (dealer+2)%n reduces to dealer automatically).
+    # No special case needed; the n>=3 formula already produces the
+    # engine's actual n==2 behavior once reduced mod 2.
+    sb_seat = (dealer + 1) % n
+    bb_seat = (dealer + 2) % n
 
     is_button = (seat == dealer)
     is_small_blind = (seat == sb_seat)

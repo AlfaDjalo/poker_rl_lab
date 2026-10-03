@@ -73,6 +73,7 @@ Dependencies
 
 from __future__ import annotations
 
+import itertools
 from typing import List, Sequence, Tuple
 
 import numpy as np
@@ -116,6 +117,15 @@ class CompositeHandEncoder(BaseHandEncoder, nn.Module):
         composite_board_encoder.py's identical parameter for the
         rationale (bounds cost for large composite sets, e.g.
         Omaha hole + full board = 9 cards).
+    hole4_pairs : bool
+        If True (default), a 4-card set (Omaha hole) is decomposed into
+        its six 2-card PAIRS, as this module's docstring has always
+        described: Omaha requires exactly 2 hole cards in the final hand,
+        and 2 is a native size for the pretrained encoder. Previously
+        n == 4 fell through to _decompose_indices, which returns the four
+        3-card "drop-one" subsets instead — contradicting the docstring.
+        Set False to restore that old behaviour. Hold'em (n == 2) and
+        5-card sets are unaffected either way.
     """
 
     def __init__(
@@ -125,6 +135,7 @@ class CompositeHandEncoder(BaseHandEncoder, nn.Module):
         attn_hidden_dim: int = 32,
         project_hidden_dim: int = None,
         max_subsets: int = 12,
+        hole4_pairs: bool = True,
     ) -> None:
         nn.Module.__init__(self)
 
@@ -133,6 +144,7 @@ class CompositeHandEncoder(BaseHandEncoder, nn.Module):
 
         self.base_encoder = base_encoder  # NOT registered as nn.Module (TF-backed, frozen)
         self.max_subsets = max_subsets
+        self.hole4_pairs = hole4_pairs
 
         self.attn_scorer = nn.Sequential(
             nn.Linear(base_dim, attn_hidden_dim),
@@ -155,6 +167,18 @@ class CompositeHandEncoder(BaseHandEncoder, nn.Module):
         # case a future caller might legitimately hit).
         self.empty_embed = nn.Parameter(torch.zeros(self._output_dim))
         nn.init.normal_(self.empty_embed, std=0.02)
+
+    # ------------------------------------------------------------------
+    # Subset selection
+    # ------------------------------------------------------------------
+
+    def _subset_indices(self, n: int) -> Tuple[Tuple[int, ...], ...]:
+        """Index tuples (into an n-card list) to encode and pool."""
+        if n == 4 and self.hole4_pairs:
+            # Omaha hole: all C(4,2) = 6 two-card pairs (exactly 2 are
+            # used at showdown; 2 is a native pretrained size).
+            return tuple(itertools.combinations(range(4), 2))
+        return _decompose_indices(n, self.max_subsets)
 
     # ------------------------------------------------------------------
     # BaseHandEncoder interface (numpy contract)
@@ -245,7 +269,7 @@ class CompositeHandEncoder(BaseHandEncoder, nn.Module):
             elif n in (2, 3, 5):
                 native_idx.append(i)
             else:
-                idx_tuples = _decompose_indices(n, self.max_subsets)
+                idx_tuples = self._subset_indices(n)
                 subsets_per_example[i] = [
                     tuple(cards[p] for p in idxs) for idxs in idx_tuples
                 ]

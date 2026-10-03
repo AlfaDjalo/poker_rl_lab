@@ -1,0 +1,43 @@
+name: omaha_river_bet_or_check
+description: >
+  Heads-up Omaha river-only bet-or-check trainer, run on the REAL `omaha`
+  engine variant (no purpose-built river variant in the Engine). On reset
+  the env plays the graph forward from preflop, auto-checking/calling every
+  street before the river (no policy involvement, nothing recorded in
+  history), then overrides the pot to 100 chips with exactly 100 behind
+  each seat (SPR = 1) -- see `start:` below. Hole cards (4 each) and the
+  5-card board are dealt by the graph's own AUTO nodes. Each player must
+  use exactly 2 hole + 3 board at showdown. With SPR = 1 the only
+  meaningful bet size is pot (= all-in): the first actor can bet-pot or
+  check; whoever faces a bet can only call or fold. Self-play, single
+  BETTING node in scope.
+
+engine_variant: omaha
+num_seats: 2
+
+stack:
+  mode: fixed_bb
+  # Initial stacks only need to cover the passive preflop/flop/turn
+  # check-through; they are overridden at the river (start.stack_behind_bb).
+  stack_bb: 75.0
+  big_blind_size: 2
+  small_blind_size: 1
+  # Fixed dealer => stable physical seat roles across hands (required by
+  # a per-seat DualSeatActorCritic -- see graph_training_loop.py).
+  fixed_dealer_position: 1
+
+start:
+  node_id: bet_river
+  pot_bb: 50.0            # 100 chips at big_blind_size 2 (50 each)
+  stack_behind_bb: 50.0   # 100 chips behind each seat
+
+scope:
+  domains: [BETTING]
+  node_ids: [bet_river]
+
+action_abstraction:
+  BETTING:
+    # SPR = 1: pot-sized == all-in, so any other fraction would dedupe to
+    # the same (min_amount == max_amount) shove option anyway.
+    bet_fractions: [1.0]
+    include_all_in: true

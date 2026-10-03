@@ -26,20 +26,21 @@ Each adapter has its own attn_scorer/project — separately trainable,
 despite sharing the same frozen base_encoder — since each is solving a
 different pooling problem (texture vs. made-hand strength).
 
-The previous from-scratch card_encoder.CardEncoder + board_encoder.
-BoardEncoder wiring has been REMOVED: board texture is now produced by
-the pretrained-backed board_texture_encoder instead. See the
-conversation history / commit message for the rationale (a bare board
-fed through 5-card mode was out-of-distribution for what the encoder
-was actually trained on; 3-card mode is the closer match, and the
-missing "made hand strength" signal — hole+board together — was simply
-absent from the architecture before this change).
-
-Hand encoder note
---------------------
-Unchanged: build_actor_critic does NOT import
-representation.pretrained_hand_encoder at module level — only inside
-the function body, only if the caller didn't supply hand_encoder.
+Configurable action_dim (for graph-native scenarios)
+---------------------------------------------------------
+ActorCriticConfig.action_dim now defaults to
+actions.abstract_action.NUM_ACTIONS (the old fixed 9-value abstract
+BETTING-only action space) purely for backward compatibility with
+anything not yet migrated. A graph-native scenario
+(scenarios.graph_scenario_config.GraphScenarioConfig) has its own,
+generally DIFFERENT action-space width — see
+GraphScenarioConfig.max_action_options's own docstring: it covers
+whichever DecisionDomain(s) the scenario is actually in scope for
+(BETTING and/or CARD_SELECT/CARD_PASS/BOOLEAN/CHOICE), sized from that
+scenario's own action_abstraction, not a single game-wide constant.
+Callers building a policy for a graph scenario should pass
+ActorCriticConfig(action_dim=graph_scenario_config.max_action_options,
+...) explicitly.
 
 Dependencies
 ------------
@@ -136,6 +137,23 @@ class ActorCriticConfig:
     # PolicyValueNetwork
     policy_hidden_dim: int = 128
     policy_num_shared_layers: int = 1
+    action_dim: int = NUM_ACTIONS
+    """
+    Width of the policy's categorical action head. Defaults to the old
+    fixed 9-value abstract action space (actions.abstract_action.
+    NUM_ACTIONS) for backward compatibility with any caller not yet
+    migrated to the graph-native path. For a graph-native scenario, pass
+    scenarios.graph_scenario_config.GraphScenarioConfig.max_action_options
+    instead — the action space is no longer one fixed game-wide
+    constant now that different domains (BETTING/CARD_SELECT/CARD_PASS/
+    BOOLEAN/CHOICE) and different scenarios' own bet-sizing abstractions
+    can each produce a different option count.
+    envs.graph_scenario_env.GraphScenarioEnv always pads
+    GraphDecisionObs.legal_mask out to exactly the scenario's
+    max_action_options, so passing a narrower action_dim here would
+    surface immediately as a legal_mask/logits shape mismatch at the
+    first act() call — not a silent bug.
+    """
 
     # Debugging — see composite_board_encoder.py's `debug` param.
     debug_encoders: bool = False
@@ -150,7 +168,9 @@ def build_actor_critic(
 
     See module docstring for the three-role pretrained encoder wiring
     (hand / board_texture / made_hand), all sharing `hand_encoder` as
-    their frozen base with separate trainable adapters.
+    their frozen base with separate trainable adapters, and for
+    `config.action_dim`'s role in sizing the action head for graph-
+    native scenarios.
     """
     cfg = config or ActorCriticConfig()
 
@@ -162,7 +182,6 @@ def build_actor_critic(
 
     _log_encoder_provenance(hand_encoder)
 
-    # -- Role 1: hole cards only (2-card native / Omaha C(4,2)) -----------
     composite_hand_encoder = CompositeHandEncoder(
         base_encoder=hand_encoder,
         output_dim=cfg.hand_output_dim,
@@ -171,7 +190,6 @@ def build_actor_critic(
         max_subsets=cfg.hand_max_subsets,
     )
 
-    # -- Role 2: board texture (3-card windows) ----------------------------
     board_texture_encoder = CompositeBoardEncoder(
         hand_encoder=hand_encoder,
         output_dim=cfg.board_output_dim,
@@ -182,7 +200,6 @@ def build_actor_critic(
         debug=cfg.debug_encoders,
     )
 
-    # -- Role 3: made hand (hole ∪ board, constraint-aware 5-card) --------
     made_hand_encoder = CompositeBoardEncoder(
         hand_encoder=hand_encoder,
         output_dim=cfg.made_hand_output_dim,
@@ -228,7 +245,7 @@ def build_actor_critic(
     representation_model = RepresentationModel(
         hand_encoder=composite_hand_encoder,
         board_encoder=board_texture_encoder,
-        made_hand_encoder=made_hand_encoder,   # NEW
+        made_hand_encoder=made_hand_encoder,
         point_encoder=point_encoder,
         game_encoder=game_encoder,
         position_encoder=position_encoder,
@@ -241,17 +258,13 @@ def build_actor_critic(
 
     policy_value_network = PolicyValueNetwork(
         latent_dim=representation_model.output_dim,
-        action_dim=NUM_ACTIONS,
+        action_dim=cfg.action_dim,
         hidden_dim=cfg.policy_hidden_dim,
         num_shared_layers=cfg.policy_num_shared_layers,
     )
 
     return PokerActorCritic(representation_model, policy_value_network)
 
-
-# ---------------------------------------------------------------------------
-# Debugging helpers
-# ---------------------------------------------------------------------------
 
 def _warn_untrained_encoder(caller: str) -> None:
     message = (
