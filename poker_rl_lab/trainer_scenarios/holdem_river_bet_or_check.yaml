@@ -5,7 +5,8 @@ rl_game_name: holdem
 betting_type: no_limit
 stack_bb: {min: 50.0, max: 50.0}
 policy:
-  checkpoint_path: "ckpt_holdem_river_bet_or_check.pt"
+  checkpoint_path: "checkpoints/river_duo/ckpt_holdem_river_bet_or_check.pt"
+  checkpoint_dir: "checkpoints/river_duo"
   variant: shared_trunk_two_heads
   allow_untrained_fallback: true
 evaluator:

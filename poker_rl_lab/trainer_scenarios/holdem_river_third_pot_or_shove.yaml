@@ -1,0 +1,14 @@
+label: "Hold'em River: 1/3 Pot or Shove"
+description: "Heads-up Hold'em river, 1/3 pot or all-in."
+engine_variant: holdem
+rl_game_name: holdem
+betting_type: no_limit
+stack_bb: {min: 50.0, max: 50.0}
+policy:
+  checkpoint_path: "checkpoints/river_duo/ckpt_holdem_river_third_pot_or_shove.pt"
+  checkpoint_dir: "checkpoints/river_duo"
+  variant: shared_trunk_two_heads
+  allow_untrained_fallback: true
+evaluator:
+  type: rl_policy_frequency
+  params: {}

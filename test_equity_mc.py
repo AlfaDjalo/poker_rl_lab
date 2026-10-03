@@ -8,10 +8,10 @@ engine's own poker_eval.evaluate_hands disagrees with that reference.
     python test_equity_mc.py 100000
 
 PASS/FAIL is decided ONLY by fast-evaluator vs brute force.
-Engine disagreements are reported as information: a known one is
-"wheel (A-2-3-4-5) ties a 6-high straight/straight-flush" in
-evaluate_hands, which brute force and the fast evaluator both rank
-correctly (6-high wins).
+Engine disagreements are reported as information. The current
+evaluate_hands implementation ranks a wheel (A-2-3-4-5) below a
+6-high straight/straight-flush, matching brute force and the fast
+evaluator.
 
 Deal modes (for coverage of rare hand classes):
   uniform : any 9 distinct cards.
@@ -98,12 +98,12 @@ def main():
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 30_000
     rng = random.Random(2024)
     fast_bad_total = 0
-    engine_wheel_total = 0
+    engine_wheel_mismatch_total = 0
     engine_other_total = 0
     engine_other_examples = []
 
     for mode in ("uniform", "ranks7", "suits2"):
-        fast_bad = engine_wheel = engine_other = 0
+        fast_bad = engine_wheel_mismatch = engine_other = 0
         for _ in range(n):
             cards = rng.sample(deck_for(mode, rng), 9)
             hole_a, hole_b, board_c = cards[0:2], cards[2:4], cards[4:9]
@@ -118,26 +118,26 @@ def main():
                     print(f"   FAST MISMATCH {hole_a} {hole_b} {board_c} ref={ref}")
 
             if engine_verdict(a, b, bd) != ref:
-                wheel = (
+                wheel_mismatch = (
                     sa[0] == sb[0] and sa[0] in (4, 8)
                     and sorted((sa[1], sb[1])) == [3, 4]
-                    and engine_verdict(a, b, bd) == 1
                 )
-                if wheel:
-                    engine_wheel += 1
+                if wheel_mismatch:
+                    engine_wheel_mismatch += 1
                 else:
                     engine_other += 1
                     if len(engine_other_examples) < 5:
                         engine_other_examples.append((hole_a, hole_b, board_c, ref))
 
         print(f"{mode:8s}: {n} hands | fast vs brute-force mismatches = {fast_bad} | "
-              f"engine vs brute-force: wheel-vs-6high ties = {engine_wheel}, other = {engine_other}")
+              f"engine vs brute-force: wheel-vs-6high mismatches = {engine_wheel_mismatch}, "
+              f"other = {engine_other}")
         fast_bad_total += fast_bad
-        engine_wheel_total += engine_wheel
+        engine_wheel_mismatch_total += engine_wheel_mismatch
         engine_other_total += engine_other
 
     print("\nFAST EVALUATOR:", "PASS" if fast_bad_total == 0 else f"FAIL ({fast_bad_total} mismatches)")
-    print(f"ENGINE evaluate_hands: {engine_wheel_total} wheel-vs-6-high-straight ties (known bug), "
+    print(f"ENGINE evaluate_hands: {engine_wheel_mismatch_total} wheel-vs-6-high-straight mismatches, "
           f"{engine_other_total} other disagreements")
     for ex in engine_other_examples:
         print("   engine-other example:", ex)

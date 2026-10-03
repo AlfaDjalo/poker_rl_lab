@@ -5,9 +5,9 @@ description: >
   On reset the env plays the graph forward from preflop, auto-checking/
   calling every street before the river (no policy involvement, nothing
   recorded in history), then overrides the pot to 100 chips with exactly
-  100 behind each seat (SPR = 1) -- see `start:` below. With SPR = 1 the
-  only meaningful bet size is pot (= all-in): the first actor can bet-pot
-  or check; whoever faces a bet can only call or fold. Self-play, single
+  100 behind each seat (SPR = 1) -- see `start:` below. The first actor
+  can check or choose a one-third-pot bet or a pot-sized all-in; whoever
+  faces a bet can only call or fold. Self-play, single
   BETTING node in scope. Identical in structure to
   omaha_river_bet_or_check.yaml; only the engine variant differs.
 
@@ -36,7 +36,5 @@ scope:
 
 action_abstraction:
   BETTING:
-    # SPR = 1: pot-sized == all-in, so any other fraction would dedupe to
-    # the same (min_amount == max_amount) shove option anyway.
-    bet_fractions: [1.0]
+    bet_fractions: [0.33, 1.0]
     include_all_in: true
