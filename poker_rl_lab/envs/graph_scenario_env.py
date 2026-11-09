@@ -44,6 +44,15 @@ docstring for the full rationale. reset() now uses that value when the
 scenario sets it, and falls back to the original random-every-hand
 behaviour otherwise.
 
+Per-node betting abstraction (NEW)
+------------------------------------
+_betting_options() now looks up the abstraction with
+config.abstraction_for("BETTING", request.node_id), so a scenario can
+give different streets different bet-size menus
+(GraphScenarioConfig.node_action_abstraction). It also honours
+BettingAbstraction.allow_raise: when False, engine RAISE options are
+skipped entirely, so a facing-a-bet decision is just FOLD/CALL.
+
 Domain-general action space
 ------------------------------
 BETTING / BOOLEAN / CHOICE are single-shot: one GraphDecisionObs, one
@@ -270,15 +279,22 @@ class GraphHistoryEvent:
     for turning a sequence of these into whatever a given encoder
     (representation.history_encoder.HistoryEncoder) actually expects.
 
-    Only ever populated for BETTING decisions today — see
-    GraphScenarioEnv._submit()'s docstring for why CARD_SELECT/
-    CARD_PASS/BOOLEAN/CHOICE aren't recorded into history yet.
+    Populated for BETTING decisions (engine_action_type set, draw_count
+    None) and for completed CARD_SELECT decisions, i.e. a DRAW
+    (engine_action_type None, draw_count = number of cards the seat
+    discarded/replaced). Events are appended in the order they happen,
+    so the history any seat sees at a decision is exactly what it could
+    legitimately know at that moment: in a draw round where seat 0
+    draws first, seat 1's observation at its own draw already contains
+    seat 0's draw event, while seat 0's does not contain seat 1's until
+    seat 1 has drawn. CARD_PASS/BOOLEAN/CHOICE are still not recorded.
     """
     seat: int
-    engine_action_type: Any   # poker_engine.actions.action_type.ActionType
+    engine_action_type: Any   # poker_engine.actions.action_type.ActionType; None for a DRAW event
     street_index: int
     pot_fraction: float
     is_aggressor: bool
+    draw_count: Optional[int] = None   # cards drawn (CARD_SELECT); None for betting events
 
 
 @dataclass
@@ -304,6 +320,9 @@ def validate_against_graph(config: GraphScenarioConfig, graph: GameGraph) -> Non
     RuntimeError with a message pointing at the scenario/graph mismatch
     — called once, at GraphScenarioEnv construction, so a bad scenario
     file fails loudly before any hand is ever dealt.
+
+    Also checks that every key of config.node_action_abstraction names
+    a BETTING DECISION node in the compiled graph.
     """
     if config.start is not None:
         try:
@@ -322,6 +341,20 @@ def validate_against_graph(config: GraphScenarioConfig, graph: GameGraph) -> Non
             raise RuntimeError(
                 f"scenario {config.name!r} start.node_id {config.start.node_id!r} "
                 f"(domain {start_node.domain.name}) is outside the scenario's scope"
+            )
+    for node_id in config.node_action_abstraction:
+        try:
+            node = graph.node(node_id)
+        except GameGraphError as exc:
+            raise RuntimeError(
+                f"scenario {config.name!r} node_action_abstraction references "
+                f"{node_id!r}, which is not a node in the compiled "
+                f"{config.engine_variant!r} graph"
+            ) from exc
+        if node.kind != NodeKind.DECISION or node.domain.name != "BETTING":
+            raise RuntimeError(
+                f"scenario {config.name!r} node_action_abstraction key "
+                f"{node_id!r} is not a BETTING DECISION node"
             )
     if config.scope.node_ids is None:
         return
@@ -431,6 +464,7 @@ class GraphScenarioEnv:
         self._pending_pick: Optional[_PendingCardPick] = None
         self._current_options: Tuple[GraphActionOption, ...] = ()
         self._starting_stacks: Tuple[int, ...] = ()
+        self._history: List[GraphHistoryEvent] = []
         self._done = True
 
     # ------------------------------------------------------------------
@@ -513,7 +547,7 @@ class GraphScenarioEnv:
         )
         self._pending_pick = None
         self._starting_stacks = tuple(p.stack for p in players)
-        self._history: List[GraphHistoryEvent] = []
+        self._history = []
         self._done = False
 
         self._engine.start()
@@ -770,7 +804,11 @@ class GraphScenarioEnv:
     # ------------------------------------------------------------------
 
     def _betting_options(self, request: DecisionRequest) -> Tuple[GraphActionOption, ...]:
-        abstraction: Optional[BettingAbstraction] = self.config.abstraction_for("BETTING")
+        # Per-node override (config.node_action_abstraction) wins over the
+        # domain-wide action_abstraction["BETTING"] fallback.
+        abstraction: Optional[BettingAbstraction] = self.config.abstraction_for(
+            "BETTING", request.node_id
+        )
         if abstraction is None:
             raise RuntimeError(
                 f"scenario {self.config.name!r} has no BETTING action_abstraction "
@@ -778,10 +816,39 @@ class GraphScenarioEnv:
             )
 
         pot = self._engine.state.pot
+        bb = self.config.stack.big_blind_size
         seen = set()
         resolved: List[GraphActionOption] = []
 
+        # Bets/raises already made on THIS street (blinds are posted by an
+        # AUTO node and never appear in history, so they don't count).
+        street = self.graph.node(request.node_id).metadata.get("street_index", 0)
+        street = street if isinstance(street, int) and street >= 0 else 0
+        aggressions = sum(
+            1 for e in self._history if e.is_aggressor and e.street_index == street
+        )
+
         for opt in request.options:
+            # allow_raise=False: facing a bet, the only continuing options
+            # are FOLD / CALL — never re-raise.
+            if not abstraction.allow_raise and opt.action_type == EngineActionType.RAISE:
+                continue
+            # max_aggressions: once the cap is reached, no more BET/RAISE.
+            if (
+                abstraction.max_aggressions is not None
+                and aggressions >= abstraction.max_aggressions
+                and opt.action_type in (EngineActionType.BET, EngineActionType.RAISE)
+            ):
+                continue
+            # no_limp: with no bet/raise yet this street, CALL (i.e. limp
+            # preflop) is not offered.
+            if (
+                abstraction.no_limp
+                and aggressions == 0
+                and opt.action_type == EngineActionType.CALL
+            ):
+                continue
+
             if opt.min_amount == opt.max_amount:
                 key = (opt.action_type, opt.min_amount)
                 if key in seen:
@@ -796,7 +863,7 @@ class GraphScenarioEnv:
                 )
                 continue
 
-            for frac in abstraction.bet_fractions:
+            for frac in abstraction.fractions_at(aggressions):
                 amount = max(opt.min_amount, min(opt.max_amount, round(frac * pot)))
                 key = (opt.action_type, amount)
                 if key in seen:
@@ -810,7 +877,23 @@ class GraphScenarioEnv:
                     )
                 )
 
-            if abstraction.include_all_in:
+            for size_bb in abstraction.sizes_bb_at(aggressions):
+                amount = max(
+                    opt.min_amount, min(opt.max_amount, int(round(size_bb * bb)))
+                )
+                key = (opt.action_type, amount)
+                if key in seen:
+                    continue
+                seen.add(key)
+                resolved.append(
+                    GraphActionOption(
+                        label=f"{opt.action_type.name}_{size_bb:g}BB",
+                        amount=amount,
+                        engine_action_type=opt.action_type,
+                    )
+                )
+
+            if abstraction.all_in_at(aggressions):
                 key = (opt.action_type, opt.max_amount)
                 if key not in seen:
                     seen.add(key)
@@ -825,7 +908,8 @@ class GraphScenarioEnv:
         if not resolved:
             raise RuntimeError(
                 f"BETTING abstraction produced zero resolved actions at "
-                f"node {request.node_id!r} — check bet_fractions/include_all_in"
+                f"node {request.node_id!r} — check bet_fractions/include_all_in/"
+                f"allow_raise"
             )
         return tuple(resolved)
 
@@ -956,11 +1040,9 @@ class GraphScenarioEnv:
         here on its way to GraphEngine.submit_decision(), so BETTING
         history can be recorded in exactly one place regardless of
         which call site (single-shot finalize, or card-pick
-        completion) produced it. Only BETTING is recorded into
-        self._history for now — see envs/observations.py's
-        HistoryEventObs, which was already BETTING-only before this
-        file existed; extending history to other domains is a
-        documented follow-up, not a regression.
+        completion) produced it. BETTING actions and CARD_SELECT draws
+        are recorded into self._history (see GraphHistoryEvent);
+        CARD_PASS/BOOLEAN/CHOICE are not yet.
         """
         if response.domain == DecisionDomain.BETTING:
             action: Action = response.value
@@ -974,6 +1056,22 @@ class GraphScenarioEnv:
                     street_index=street_index if isinstance(street_index, int) and street_index >= 0 else 0,
                     pot_fraction=(action.amount / pot_before if pot_before > 0 else 0.0),
                     is_aggressor=is_aggressor,
+                )
+            )
+        elif response.domain == DecisionDomain.CARD_SELECT:
+            # A completed draw/discard: record HOW MANY cards were taken
+            # (not which ones -- the opponent can see the count, not the
+            # cards). Appended at submit time, in chronological order, so
+            # visibility follows draw order automatically.
+            last_street = self._history[-1].street_index if self._history else 0
+            self._history.append(
+                GraphHistoryEvent(
+                    seat=response.player_index,
+                    engine_action_type=None,
+                    street_index=last_street,
+                    pot_fraction=0.0,
+                    is_aggressor=False,
+                    draw_count=len(response.value),
                 )
             )
         self._engine.submit_decision(response)

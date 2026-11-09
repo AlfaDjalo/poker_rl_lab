@@ -1,0 +1,14 @@
+label: "Hold'em Turn+River: 3/4 Pot, then 1/3 Pot or Shove"
+description: "Heads-up Hold'em from the turn. Turn: 3/4 pot or check. River: 1/3 pot, all-in, or check. No raises."
+engine_variant: holdem
+rl_game_name: holdem
+betting_type: no_limit
+stack_bb: {min: 100.0, max: 100.0}
+policy:
+  checkpoint_path: "checkpoints/turn_and_river_duo/ckpt_generic.pt"
+  checkpoint_dir: "checkpoints/turn_and_river_duo"
+  variant: separate_networks
+  allow_untrained_fallback: true
+evaluator:
+  type: rl_policy_frequency
+  params: {}

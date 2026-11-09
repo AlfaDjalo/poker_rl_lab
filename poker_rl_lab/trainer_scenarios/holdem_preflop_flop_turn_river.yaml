@@ -1,0 +1,14 @@
+label: "Hold'em Preflop to River: Pot-sized Raise, Restricted Trees"
+description: "Heads-up Hold'em, 50bb. Preflop: fold or raise to 3bb, then call or fold. Flop 1/3 or check, turn 3/4 or check, river 1/3 / all-in / check. No re-raises."
+engine_variant: holdem
+rl_game_name: holdem
+betting_type: no_limit
+stack_bb: {min: 50.0, max: 50.0}
+policy:
+  checkpoint_path: "checkpoints/preflop_flop_turn_river_duo/ckpt_generic.pt"
+  checkpoint_dir: "checkpoints/preflop_flop_turn_river_duo"
+  variant: separate_networks
+  allow_untrained_fallback: true
+evaluator:
+  type: rl_policy_frequency
+  params: {}

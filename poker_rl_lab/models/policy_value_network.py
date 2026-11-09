@@ -402,5 +402,10 @@ class PokerActorCritic(nn.Module):
         latent = self.representation_model(obs)
         logits, _ = self.policy_value_network(latent)
         mask_t = torch.as_tensor(legal_mask, dtype=torch.bool, device=logits.device)
+        if logits.shape[-1] != mask_t.shape[-1]:
+            raise ValueError(
+                f"Action space mismatch: network outputs {logits.shape[-1]} actions, "
+                f"legal_mask has {mask_t.shape[-1]}. Checkpoint likely trained with a different action set."
+            )
         masked_logits = apply_legal_mask(logits, mask_t)
         return torch.softmax(masked_logits, dim=-1)

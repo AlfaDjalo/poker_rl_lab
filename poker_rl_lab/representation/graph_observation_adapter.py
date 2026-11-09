@@ -44,10 +44,10 @@ Known gaps (documented, not silently guessed)
       Flagged here rather than silently wrong; fix by extending
       GraphScenarioEnv to surface it if a variant actually needs
       ante-aware training.
-    - History is BETTING-only (see graph_scenario_env.py's
-      GraphHistoryEvent docstring) — CARD_SELECT/CARD_PASS/BOOLEAN/
-      CHOICE actions never appear in the HistoryEncoder token sequence
-      yet, same pre-existing scope limit the old pipeline had.
+    - History covers BETTING actions and CARD_SELECT draws (a DRAW event
+      carries the number of cards drawn; see DRAW_HISTORY_ACTION_TYPE).
+      CARD_PASS/BOOLEAN/CHOICE actions still never appear in the
+      HistoryEncoder token sequence.
 
 Dependencies
 ------------
@@ -65,6 +65,7 @@ from __future__ import annotations
 
 from typing import List
 
+from poker_rl_lab.actions.abstract_action import NUM_ACTIONS
 from poker_rl_lab.envs.graph_scenario_env import GraphDecisionObs, GraphHistoryEvent, GraphScenarioEnv
 from poker_rl_lab.representation.card_utils import mask_to_card_ids
 from poker_rl_lab.representation.representation_model import RepresentationInput
@@ -173,6 +174,16 @@ def _graph_stack_features(env: GraphScenarioEnv, seat: int) -> StackFeatures:
 # History
 # ---------------------------------------------------------------------------
 
+#: History action_type id used for a DRAW (CARD_SELECT) event. Reuses the
+#: last slot of HistoryEncoder's existing NUM_ACTIONS-sized action-type
+#: table (the old abstract ALL_IN slot, which this adapter never emits:
+#: engine betting types are small ints 0-4ish), so NO parameter shape
+#: changes and existing checkpoints still load. The number of cards drawn
+#: travels in pot_fraction as draw_count / hole_card_count (0..1), since a
+#: draw moves no chips and pot_fraction is otherwise 0.0 for such events.
+DRAW_HISTORY_ACTION_TYPE: int = NUM_ACTIONS - 1
+
+
 def _graph_history_events(env: GraphScenarioEnv, seat: int) -> List[HistoryEvent]:
     state = env.state
     n = len(state.players)
@@ -180,6 +191,23 @@ def _graph_history_events(env: GraphScenarioEnv, seat: int) -> List[HistoryEvent
     events: List[HistoryEvent] = []
     for e in env.history:
         seat_fraction = ((e.seat - dealer) % n) / n
+        if e.draw_count is not None:
+            # DRAW event: the opponent sees HOW MANY cards were drawn (not
+            # which). Visibility follows chronology: env.history only holds
+            # events that have already happened, so the first drawer cannot
+            # see the second drawer's count until that draw is made.
+            hole_n = max(len(mask_to_card_ids(state.players[e.seat].hand_mask)), 1)
+            events.append(
+                HistoryEvent(
+                    action_type=DRAW_HISTORY_ACTION_TYPE,
+                    street_index=e.street_index,
+                    seat_fraction=seat_fraction,
+                    pot_fraction=min(e.draw_count / hole_n, 1.0),
+                    is_hero=(e.seat == seat),
+                    is_aggressor=False,
+                )
+            )
+            continue
         events.append(
             HistoryEvent(
                 # engine_action_type is an int-valued Enum (FOLD/CHECK/

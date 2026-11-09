@@ -1,0 +1,48 @@
+name: holdem_preflop_flop_turn_river
+description: >
+  Heads-up Hold'em, full hand, 50bb deep, restricted trees. Preflop: first
+  player (seat 0, small blind) can fold or raise to 3bb (no limp); the big
+  blind can only call or fold (no 3-bet). Flop: 1/3 pot or check. Turn:
+  3/4 pot or check. River: 1/3 pot, all-in, or check. After a bet on any
+  postflop street the opponent can only call or fold. Runs on the real
+  `holdem` variant from the start of the hand (no fast-forward).
+
+engine_variant: holdem
+num_seats: 2
+
+stack:
+  mode: fixed_bb
+  stack_bb: 50.0          # 100 chips each
+  big_blind_size: 2
+  small_blind_size: 1
+  fixed_dealer_position: 1
+
+scope:
+  domains: [BETTING]
+  node_ids: [bet_preflop, bet_flop, bet_turn, bet_river]
+
+action_abstraction:
+  BETTING:                # fallback only; all four nodes are overridden below
+    bet_fractions: [0.3333]
+    include_all_in: false
+    allow_raise: false
+
+node_action_abstraction:
+  bet_preflop:
+    bet_fractions: []
+    sizes_bb: [3.0]        # raise TO 3bb (6 chips)
+    include_all_in: false
+    max_aggressions: 1     # one raise, then call/fold only
+    no_limp: true          # first player: fold or raise
+  bet_flop:
+    bet_fractions: [0.3333]
+    include_all_in: false
+    allow_raise: false
+  bet_turn:
+    bet_fractions: [0.75]
+    include_all_in: false
+    allow_raise: false
+  bet_river:
+    bet_fractions: [0.3333]
+    include_all_in: true
+    allow_raise: false

@@ -1,0 +1,14 @@
+label: "2-7 Single Draw: Heads-Up 100bb"
+description: "Heads-up deuce-to-seven single draw, 100bb. Pre-draw betting, one draw, post-draw betting."
+engine_variant: single_draw_27
+rl_game_name: single_draw_27
+betting_type: no_limit
+stack_bb: {min: 100.0, max: 100.0}
+policy:
+  checkpoint_path: "checkpoints/single_draw_27_duo/ckpt_single_draw_27_hu_100bb.pt"
+  checkpoint_dir: "checkpoints/single_draw_27_duo"
+  variant: separate_networks
+  allow_untrained_fallback: true
+evaluator:
+  type: rl_policy_frequency
+  params: {}

@@ -46,7 +46,9 @@ A GraphScenarioConfig therefore does NOT author a graph. It names:
     exactly like BaseScenario.players[*].stack always has been,
   - how to turn each in-scope decision's raw DecisionRequest.options
     into the model's fixed, small discrete action space
-    (`action_abstraction`), domain by domain.
+    (`action_abstraction`), domain by domain — and, for BETTING, node
+    by node (`node_action_abstraction`), so e.g. the turn and river of
+    one scenario can offer different bet-size menus.
 
 This module is why the RL Lab doesn't need a new hand-authored *_duo.yaml
 per game shape anymore: any Engine variant YAML that already exists
@@ -65,7 +67,7 @@ Anything that actually needs to compile/walk a real GameGraph (loading
 the variant YAML, checking that scope.node_ids/domains actually exist
 in the compiled graph, resolving DecisionRequest.options at runtime)
 lives in graph_scenario_env.py instead, and is validated lazily via
-`validate_against_graph()` below — called BY that module, not at
+`validate_against_graph()` — called BY that module, not at
 load_graph_scenario() time.
 
 Domain-general from the start
@@ -93,7 +95,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Union
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import yaml
 
@@ -370,25 +372,96 @@ class BettingAbstraction:
         addition to whatever bet_fractions produces) whenever the
         DecisionRequest's max sizing option equals the acting player's
         full stack. Default True.
+    allow_raise : bool
+        If False, engine RAISE options are never offered at nodes using
+        this abstraction: a facing-a-bet decision is just FOLD/CALL.
+        Gives a "bet or check, then call or fold" tree with no
+        re-raises. Default True (unchanged behaviour).
+    sizes_bb : Sequence[float]
+        Absolute "bet/raise TO" sizes in big blinds (e.g. [3.0] = raise
+        to 3bb), as an alternative to pot fractions. Each is converted to
+        chips with stack.big_blind_size and clamped into the engine's
+        (min, max) range at runtime. Default empty.
+    max_aggressions : Optional[int]
+        If set, once this many bets/raises have been made on the current
+        street (blinds do NOT count), no further BET/RAISE option is
+        offered — only fold/check/call remain. max_aggressions=1 gives
+        "one raise, then call or fold". Default None (unlimited).
+    no_limp : bool
+        If True, CALL is not offered while no bet/raise has been made on
+        the street yet. Preflop this removes the limp: the first player
+        can only fold or raise. Default False.
+    bet_fractions_by_aggression, sizes_bb_by_aggression : Sequence[Sequence[float]]
+        Per-aggression-level sizing menus. Entry i is the menu offered
+        when i bets/raises have ALREADY been made on this street (blinds
+        do not count): entry 0 is the opening bet/raise, entry 1 the
+        re-raise (3-bet preflop), and so on. Indexes past the end offer
+        no sized options of that kind (only all-in, if allowed). When a
+        by_aggression field is non-empty it REPLACES the matching flat
+        field (bet_fractions / sizes_bb) at every level. Example for a
+        draw game's preflop: sizes_bb_by_aggression: [[3.0], [9.0]] =
+        "open to 3bb; 3-bet to 9bb", so the opener is never offered 9bb.
+    all_in_min_aggressions : int
+        All-in is only offered once at least this many bets/raises have
+        been made on the street (default 0 = always, unchanged). Use 2
+        to allow a shove only as a 4-bet.
     """
     bet_fractions: Sequence[float] = field(
         default_factory=lambda: (0.25, 0.5, 0.75, 1.0, 1.5)
     )
     include_all_in: bool = True
+    allow_raise: bool = True
+    sizes_bb: Sequence[float] = field(default_factory=tuple)
+    max_aggressions: Optional[int] = None
+    no_limp: bool = False
+    bet_fractions_by_aggression: Sequence[Sequence[float]] = field(default_factory=tuple)
+    sizes_bb_by_aggression: Sequence[Sequence[float]] = field(default_factory=tuple)
+    all_in_min_aggressions: int = 0
 
     def __post_init__(self) -> None:
-        if not self.bet_fractions and not self.include_all_in:
+        any_sized = (
+            bool(self.bet_fractions)
+            or bool(self.sizes_bb)
+            or any(self.bet_fractions_by_aggression)
+            or any(self.sizes_bb_by_aggression)
+        )
+        if not any_sized and not self.include_all_in:
             raise GraphScenarioConfigError(
                 "betting abstraction must offer at least one sized bet "
-                "(bet_fractions non-empty) or include_all_in=True — "
-                "otherwise a BETTING decision with no legal check/call "
-                "would have zero legal actions"
+                "(bet_fractions / sizes_bb, flat or by_aggression, non-empty) "
+                "or include_all_in=True — otherwise a BETTING decision with "
+                "no legal check/call would have zero legal actions"
             )
+        if self.all_in_min_aggressions < 0:
+            raise GraphScenarioConfigError(
+                f"all_in_min_aggressions must be >= 0, got {self.all_in_min_aggressions}"
+            )
+        for lvl in self.bet_fractions_by_aggression:
+            for f in lvl:
+                if f <= 0:
+                    raise GraphScenarioConfigError(
+                        f"bet_fractions_by_aggression values must be > 0, got {f}"
+                    )
+        for lvl in self.sizes_bb_by_aggression:
+            for v in lvl:
+                if v <= 0:
+                    raise GraphScenarioConfigError(
+                        f"sizes_bb_by_aggression values must be > 0, got {v}"
+                    )
         for f in self.bet_fractions:
             if f <= 0:
                 raise GraphScenarioConfigError(
                     f"betting abstraction bet_fractions must all be > 0, got {f}"
                 )
+        for s in self.sizes_bb:
+            if s <= 0:
+                raise GraphScenarioConfigError(
+                    f"betting abstraction sizes_bb must all be > 0, got {s}"
+                )
+        if self.max_aggressions is not None and self.max_aggressions < 0:
+            raise GraphScenarioConfigError(
+                f"max_aggressions must be >= 0, got {self.max_aggressions}"
+            )
 
     @property
     def max_options(self) -> int:
@@ -404,7 +477,42 @@ class BettingAbstraction:
         bound, never adds — so sizing the head to this value is always
         safe, if occasionally a little wider than strictly needed.
         """
-        return 3 + len(self.bet_fractions) + (1 if self.include_all_in else 0)
+        n_levels = max(
+            len(self.bet_fractions_by_aggression),
+            len(self.sizes_bb_by_aggression),
+            1,
+        )
+        widest = max(
+            len(self.fractions_at(i)) + len(self.sizes_bb_at(i))
+            for i in range(n_levels + 1)
+        )
+        return 3 + widest + (1 if self.include_all_in else 0)
+
+    # ------------------------------------------------------------------
+    # Per-aggression-level menus (used by GraphScenarioEnv._betting_options)
+    # ------------------------------------------------------------------
+
+    def fractions_at(self, aggressions: int) -> Tuple[float, ...]:
+        """Pot-fraction menu when `aggressions` bets/raises have been made
+        this street. See bet_fractions_by_aggression."""
+        if self.bet_fractions_by_aggression:
+            if aggressions < len(self.bet_fractions_by_aggression):
+                return tuple(self.bet_fractions_by_aggression[aggressions])
+            return ()
+        return tuple(self.bet_fractions)
+
+    def sizes_bb_at(self, aggressions: int) -> Tuple[float, ...]:
+        """Absolute-bb menu when `aggressions` bets/raises have been made
+        this street. See sizes_bb_by_aggression."""
+        if self.sizes_bb_by_aggression:
+            if aggressions < len(self.sizes_bb_by_aggression):
+                return tuple(self.sizes_bb_by_aggression[aggressions])
+            return ()
+        return tuple(self.sizes_bb)
+
+    def all_in_at(self, aggressions: int) -> bool:
+        """Whether all-in is offered at this aggression level."""
+        return self.include_all_in and aggressions >= self.all_in_min_aggressions
 
 
 @dataclass(frozen=True)
@@ -480,6 +588,13 @@ class GraphScenarioConfig:
         __post_init__. Missing an in-scope domain here is allowed only
         for BOOLEAN (always {True, False}, needs no configuration);
         every other domain in scope.domains MUST have an entry.
+    node_action_abstraction : Dict[str, BettingAbstraction]
+        Per-node BETTING abstraction overrides, keyed by graph node id
+        (e.g. {"bet_turn": ..., "bet_river": ...}). A BETTING node
+        listed here uses its own abstraction instead of
+        action_abstraction["BETTING"], which remains the fallback for
+        every other BETTING node. Lets one scenario offer different
+        bet-size menus (and allow_raise settings) on different streets.
     """
     name: str
     engine_variant: str
@@ -495,6 +610,7 @@ class GraphScenarioConfig:
     scope: DecisionScope = field(default_factory=DecisionScope)
     action_abstraction: Dict[str, AnyAbstraction] = field(default_factory=dict)
     start: Optional[StartConfig] = None
+    node_action_abstraction: Dict[str, BettingAbstraction] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.num_seats < 2:
@@ -543,13 +659,34 @@ class GraphScenarioConfig:
                     f"in-scope domain except BOOLEAN needs an abstraction"
                 )
 
+        if self.node_action_abstraction:
+            if "BETTING" not in self.scope.domains:
+                raise GraphScenarioConfigError(
+                    "node_action_abstraction requires BETTING in scope.domains"
+                )
+            if self.scope.node_ids is not None:
+                for nid in self.node_action_abstraction:
+                    if nid not in self.scope.node_ids:
+                        raise GraphScenarioConfigError(
+                            f"node_action_abstraction key {nid!r} is not in "
+                            f"scope.node_ids ({list(self.scope.node_ids)})"
+                        )
+
     # ------------------------------------------------------------------
     # Public helpers
     # ------------------------------------------------------------------
 
-    def abstraction_for(self, domain: str) -> Optional[AnyAbstraction]:
-        """The configured abstraction for `domain`, or None for BOOLEAN
-        (which needs none) / a domain not in scope at all."""
+    def abstraction_for(
+        self, domain: str, node_id: Optional[str] = None
+    ) -> Optional[AnyAbstraction]:
+        """The configured abstraction for `domain` (and, for BETTING,
+        optionally a specific `node_id` whose per-node override wins),
+        or None for BOOLEAN (which needs none) / a domain not in scope
+        at all."""
+        if domain == "BETTING" and node_id is not None:
+            override = self.node_action_abstraction.get(node_id)
+            if override is not None:
+                return override
         return self.action_abstraction.get(domain)
 
     @property
@@ -559,7 +696,8 @@ class GraphScenarioConfig:
         — i.e. the categorical action head size the policy network must
         be built with (see models.actor_critic_factory.ActorCriticConfig
         .action_dim). Computed as the max, across every domain actually
-        in scope, of that domain's own upper bound:
+        in scope (and every per-node BETTING override), of that
+        domain's own upper bound:
 
             BETTING              -> BettingAbstraction.max_options
             CARD_SELECT/CARD_PASS/CHOICE -> PassthroughAbstraction.max_options
@@ -579,6 +717,7 @@ class GraphScenarioConfig:
                 continue
             abstraction = self.action_abstraction[domain]
             widths.append(abstraction.max_options)
+        widths.extend(a.max_options for a in self.node_action_abstraction.values())
         return max(widths)
 
 
@@ -628,6 +767,23 @@ def _parse_abstraction(domain: str, raw: dict) -> AnyAbstraction:
         return BettingAbstraction(
             bet_fractions=tuple(raw.get("bet_fractions", (0.25, 0.5, 0.75, 1.0, 1.5))),
             include_all_in=bool(raw.get("include_all_in", True)),
+            allow_raise=bool(raw.get("allow_raise", True)),
+            sizes_bb=tuple(raw.get("sizes_bb", ())),
+            max_aggressions=(
+                int(raw["max_aggressions"])
+                if raw.get("max_aggressions") is not None
+                else None
+            ),
+            no_limp=bool(raw.get("no_limp", False)),
+            bet_fractions_by_aggression=tuple(
+                tuple(float(x) for x in lvl)
+                for lvl in raw.get("bet_fractions_by_aggression", ())
+            ),
+            sizes_bb_by_aggression=tuple(
+                tuple(float(x) for x in lvl)
+                for lvl in raw.get("sizes_bb_by_aggression", ())
+            ),
+            all_in_min_aggressions=int(raw.get("all_in_min_aggressions", 0)),
         )
     # CARD_SELECT / CARD_PASS / CHOICE all share the same passthrough shape.
     if "max_options" not in raw:
@@ -656,6 +812,11 @@ def parse_graph_scenario_config(data: dict) -> GraphScenarioConfig:
         for domain, raw in abstraction_raw.items()
     }
 
+    node_abstraction = {
+        nid: _parse_abstraction("BETTING", raw)
+        for nid, raw in (data.get("node_action_abstraction") or {}).items()
+    }
+
     return GraphScenarioConfig(
         name=data["name"],
         engine_variant=data["engine_variant"],
@@ -666,6 +827,7 @@ def parse_graph_scenario_config(data: dict) -> GraphScenarioConfig:
         scope=scope,
         action_abstraction=action_abstraction,
         start=_parse_start(data.get("start")),
+        node_action_abstraction=node_abstraction,
     )
 
 

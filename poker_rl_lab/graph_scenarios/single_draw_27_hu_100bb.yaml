@@ -1,0 +1,43 @@
+name: single_draw_27_hu_100bb
+description: >
+  Heads-up 2-7 Single Draw (deuce-to-seven lowball, one draw), 100bb deep,
+  full hand from the deal. Pre-draw betting (open to 3bb / 3-bet to 9bb /
+  4-bet all-in, limping allowed), one draw (discard 0-5 cards, chosen one card at
+  a time with a STOP option), post-draw betting (1/2 pot, pot, all-in).
+  Runs on the real `single_draw_27` engine variant (poker_engine/games/
+  single_draw_27.yaml). Self-play, one policy per seat.
+
+engine_variant: single_draw_27
+num_seats: 2
+
+stack:
+  mode: fixed_bb
+  stack_bb: 100.0         # 200 chips each
+  big_blind_size: 2
+  small_blind_size: 1
+  fixed_dealer_position: 1   # seat 0 = SB, first to act pre-draw and post-draw
+
+scope:
+  domains: [BETTING, CARD_SELECT]
+  node_ids: [bet_predraw, draw, bet_postdraw]
+
+action_abstraction:
+  BETTING:                # fallback only; both betting nodes are overridden below
+    bet_fractions: [0.5, 1.0]
+    include_all_in: true
+  CARD_SELECT:
+    max_options: 6        # up to 5 remaining candidate cards + STOP
+
+node_action_abstraction:
+  bet_predraw:
+    bet_fractions: []
+    # Menu by number of bets/raises already made this street:
+    #   0 -> open to 3bb;  1 -> 3-bet to 9bb;  2 -> (4-bet) no sized option.
+    sizes_bb_by_aggression: [[3.0], [9.0]]
+    include_all_in: true
+    all_in_min_aggressions: 2   # shove only as a 4-bet, never as an open/3-bet
+    max_aggressions: 3          # open, 3-bet, 4-bet; then call/fold only
+  bet_postdraw:
+    bet_fractions: [0.5, 1.0]
+    include_all_in: true
+    max_aggressions: 2    # bet + one raise
